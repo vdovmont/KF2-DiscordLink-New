@@ -17,14 +17,15 @@ java -jar KF2DiscordMut.jar port webhookURL SteamAPIKey CDAVatarURL(optional) Di
 # How to build in Windows
 
 As prerequisite you need to install JDK 21 or newer.
-Now open terminal inside this project folder and run next command:
+
+If you already has it - then just open terminal inside this project folder and run next command:
 
 ```bash
 .\gradlew clean shadowJar
 ```
 
-Now you can look for your .jar file inside **build/libs** folder. To run it through console use this command:
+Now you can look for your .jar file inside **build/libs** folder. Or you can run it through the same console by using this command:
 
 ```bash
-java -jar build/KF2-DiscordLink-New.jar
+java -jar build/libs/KF2-Discord-Linker-1.1.0.jar
 ```
