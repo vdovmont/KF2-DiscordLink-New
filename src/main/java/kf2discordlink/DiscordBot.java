@@ -1,4 +1,4 @@
-
+package kf2discordlink;
 import java.io.IOException;
 
 import net.dv8tion.jda.api.JDABuilder;
@@ -34,12 +34,10 @@ public class DiscordBot extends ListenerAdapter
     {
         Message msg = event.getMessage();
     
-        
         if(!event.getAuthor().isBot() && msg.getChannel().getIdLong()==Long.parseLong(Listener.ChannelID))
         {
         	try {
-            	
-    			Listener.sendMessage("[Discord] "+event.getAuthor().getName()+" "+msg.getContentRaw());
+    		    Listener.sendMessage("[Discord] "+event.getAuthor().getName()+" "+msg.getContentRaw());
     		} catch (IOException e) {
     			
     			e.printStackTrace();

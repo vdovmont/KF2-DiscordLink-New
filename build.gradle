@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'kf2discordlink'
+version = '1.0.0'
+
+sourceCompatibility = '21'
+targetCompatibility = '21'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // JDA (Java Discord API)
+    implementation("net.dv8tion:JDA:6.1.1")
+
+    // JSON library
+    implementation 'org.json:json:20250517'
+}
+
+application {
+    mainClass = 'kf2discordlink.Main'
+}
+
+shadowJar {
+    archiveBaseName.set('KF2-DiscordLink-New')
+    archiveClassifier.set('')
+    archiveVersion.set('1.0.0')
+}
