@@ -60,7 +60,7 @@ public class DiscordBot extends ListenerAdapter
         if(channelId==Long.parseLong(Listener.ChannelID) && !event.getAuthor().isBot())
         {
         	try {
-    		    Listener.sendMessage("[Discord] "+event.getAuthor().getName()+" "+content);
+    		    Listener.sendMessage("[Discord] "+getDisplayName(event)+" "+content);
     		} catch (IOException e) {
     			e.printStackTrace();
     			System.out.println("Cannot send "+content);
@@ -93,6 +93,14 @@ public class DiscordBot extends ListenerAdapter
     		return null;
     	}
     	return payload;
+    }
+
+    private String getDisplayName(MessageReceivedEvent event)
+    {
+    	if (event.isFromGuild() && event.getMember() != null) {
+    		return event.getMember().getEffectiveName();
+    	}
+    	return event.getAuthor().getName();
     }
     
     public void sendToChannel(String channelId, String message)
