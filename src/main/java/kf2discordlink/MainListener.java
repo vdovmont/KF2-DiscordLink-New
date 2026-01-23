@@ -18,13 +18,15 @@ public class MainListener {
 	public String SteamAPIKey ="";
 	public String CDAvatarURL= "";
 	public String ChannelID = "";
+	public String RequestChannelID = "";
+	public String RequestTag = "";
 	private Socket socket;
 	private PrintWriter out;
 	private BufferedReader in;
 	private int port;
 	private DiscordBot Bot;
 	 
-	MainListener(int port,String apiURL,String SteamAPIKey,String CDAvatarURL,String BotToken,String ChannelID) throws InterruptedException
+	MainListener(int port,String apiURL,String SteamAPIKey,String CDAvatarURL,String BotToken,String ChannelID,String RequestChannelID,String RequestTag) throws InterruptedException
 	{	
 		
 		this.port = port;
@@ -32,6 +34,8 @@ public class MainListener {
 		this.SteamAPIKey=SteamAPIKey;
 		this.CDAvatarURL=CDAvatarURL;
 		this.ChannelID=ChannelID;
+		this.RequestChannelID=RequestChannelID;
+		this.RequestTag=RequestTag;
 		if(!BotToken.equals("0"))
 		{	
 			System.out.println("Initializing Discord Bot");
@@ -159,16 +163,19 @@ public class MainListener {
 	private void PostRequest(String Message)
     {
     	 try{
+    	        String[] payloadData = ExtractMessageInfo(Message);
+    	        
+    	        System.out.println(payloadData[1]+": "+payloadData[2]);
+    	        if (tryHandleDsResponse(payloadData[2])) {
+    	        	return;
+    	        }
+    	        
     	        URL url = new URL(apiURL);
     	        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
     	        connection.setRequestMethod("POST");
     	        connection.setDoOutput(true);
     	        connection.setRequestProperty("Content-Type","application/json");
     	        connection.setRequestProperty("Accept", "application/json");
-    	        
-    	        String[] payloadData = ExtractMessageInfo(Message);
-    	        
-    	        System.out.println(payloadData[1]+": "+payloadData[2]);
     	        String payload = "{\r\n"
     	        		+ "  \"username\": \""+payloadData[1]+"\",\r\n"
     	        		+ "  \"avatar_url\": \""+payloadData[3]+"\",\r\n"
@@ -187,4 +194,24 @@ public class MainListener {
     	        System.out.println("Failed to Send a Request");
     	    }
     }
+	
+	private boolean tryHandleDsResponse(String content)
+	{
+		if (Bot == null || RequestChannelID.equals("0") || RequestTag.equals("0") || RequestTag.isEmpty()) {
+			return false;
+		}
+		
+		String prefix = "dsresponse ";
+		if (!content.startsWith(prefix)) {
+			return false;
+		}
+		
+		String responseText = content.substring(prefix.length());
+		if (responseText.isEmpty()) {
+			return true;
+		}
+		
+		Bot.sendToChannel(RequestChannelID, RequestTag + " " + responseText);
+		return true;
+	}
 }

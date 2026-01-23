@@ -3,10 +3,10 @@ public class Main {
 
 	public static void main(String[] args) throws InterruptedException {
 		
-		if(args.length<6)
+		if(args.length<8)
 		{
-			System.out.println("It needs to have 6 arguments. containing port, webHookURL,SteamAPIKey,CDAVatarURL(optional),DiscordBotToken(optional),ChannelID(optional)\n"
-					+ "ex. java -jar KF2Listener.jar 2424 https://killingfloor2.com/ ad2eSDSGJSU2dfd148 0 0 0\n"
+			System.out.println("It needs to have 8 arguments. containing port, webHookURL,SteamAPIKey,CDAVatarURL(optional),DiscordBotToken(optional),ChannelID(optional),RequestChannelID(optional),RequestTag(optional)\n"
+					+ "ex. java -jar KF2Listener.jar 2424 https://killingfloor2.com/ ad2eSDSGJSU2dfd148 0 0 0 0 0\n"
 					+ "(place 0 if you don't want to use this functionality)");
 			return;
 		}
@@ -59,7 +59,7 @@ public class Main {
 				+ "                    y:::::y                                                                                                                                                                         \r\n"
 				+ "                   yyyyyyy                                                                                                                                                                          \r\n"
 				+ "                                                                                                                                                                                                        ");
-		MainListener mainlistener = new MainListener(Integer.parseInt(args[0]),args[1],args[2],args[3],args[4],args[5]);
+		MainListener mainlistener = new MainListener(Integer.parseInt(args[0]),args[1],args[2],args[3],args[4],args[5],args[6],args[7]);
 		
 		
 	}
