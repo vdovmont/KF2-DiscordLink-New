@@ -86,8 +86,8 @@ public class MainListener {
 			try {
 				DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 				String timestamp = LocalDateTime.now().format(formatter);
-				System.out.println("[" + timestamp + "] Lost connection to the server. Retrying in 8 seconds...");
-				Thread.sleep(8000);
+				System.out.println("[" + timestamp + "] Lost connection to the server. Retrying in 30 seconds...");
+				Thread.sleep(30000);
 			} catch (InterruptedException ignored) {}
 		}
 	}

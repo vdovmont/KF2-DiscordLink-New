@@ -27,11 +27,11 @@ If you already has it - then just open terminal inside this project folder and r
 Now you can look for your .jar file inside **build/libs** folder. Or you can run it through the same console by using this command:
 
 ```bash
-java -jar build/libs/KF2-Discord-Linker-1.1.2.jar 2424 https://killingfloor2.com/ ad2eSDSGJSU2dfd148 0 0 0 0 0
+java -jar build/libs/KF2-Discord-Linker-1.1.3jar 2424 https://killingfloor2.com/ ad2eSDSGJSU2dfd148 0 0 0 0 0
 ```
 
 Linker now store arguments into options.txt file (file location depends from where you're running run command). To generate it, just run linker with full arguments once (like in example above) and all parameters will be saved into file. Next time you can run linker without any arguments - they'll be pulled from file automaticaly:
 
 ```bash
-java -jar build/libs/KF2-Discord-Linker-1.1.2.jar
+java -jar build/libs/KF2-Discord-Linker-1.1.3.jar
 ```
