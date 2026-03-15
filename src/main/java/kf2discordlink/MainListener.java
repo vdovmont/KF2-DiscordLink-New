@@ -201,7 +201,7 @@ public class MainListener {
 			return false;
 		}
 		
-		String prefix = "dsresponse ";
+		String prefix = "/dsresponse ";
 		if (!content.startsWith(prefix)) {
 			return false;
 		}
@@ -211,7 +211,7 @@ public class MainListener {
 			return true;
 		}
 		
-		Bot.sendToChannel(RequestChannelID, RequestTag + " " + responseText);
+		Bot.sendToChannel(RequestChannelID, "/dsresponse " + RequestTag + " " + responseText);
 		return true;
 	}
 }

@@ -92,7 +92,7 @@ public class DiscordBot extends ListenerAdapter
     	if (payload.trim().isEmpty()) {
     		return null;
     	}
-    	return payload;
+    	return "/dsrequest " + payload;
     }
 
     private String getDisplayName(MessageReceivedEvent event)
