@@ -71,11 +71,11 @@ public class DiscordBot extends ListenerAdapter
     
     private String extractRequestText(String content)
     {
-    	if (Listener.RequestChannelID.equals("0") || Listener.RequestTag.equals("0") || Listener.RequestTag.isEmpty()) {
+    	if (Listener.RequestChannelID.equals("0") || Listener.Difficulty.equals("0") || Listener.Difficulty.isEmpty()) {
     		return null;
     	}
     	
-    	String prefix = "/dsrequest " + Listener.RequestTag;
+    	String prefix = "/dsrequest " + Listener.Difficulty;
     	if (!content.startsWith(prefix)) {
     		return null;
     	}

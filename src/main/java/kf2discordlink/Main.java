@@ -15,7 +15,7 @@ public class Main {
 	
 	private static void printUsage()
 	{
-		System.out.println("It needs to have 8 arguments. containing port, webHookURL,SteamAPIKey,CDAVatarURL(optional),DiscordBotToken(optional),ChannelID(optional),RequestChannelID(optional),RequestTag(optional)\n"
+		System.out.println("It needs to have 8 arguments. containing port, webHookURL,SteamAPIKey,CDAVatarURL(optional),DiscordBotToken(optional),ChannelID(optional),RequestChannelID(optional),Difficulty(optional)\n"
 				+ "ex. java -jar KF2-Discord-Linker-1.1.2.jar 2424 https://killingfloor2.com/ ad2eSDSGJSU2dfd148 0 0 0 0 0\n"
 				+ "(place 0 if you don't want to use this functionality)");
 	}

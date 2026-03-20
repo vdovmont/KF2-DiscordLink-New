@@ -3,6 +3,9 @@ import java.io.*;
 import java.net.*;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.io.IOException;
 import java.util.regex.Pattern;
 
@@ -19,14 +22,15 @@ public class MainListener {
 	public String CDAvatarURL= "";
 	public String ChannelID = "";
 	public String RequestChannelID = "";
-	public String RequestTag = "";
+	public String Difficulty = "";
 	private Socket socket;
 	private PrintWriter out;
 	private BufferedReader in;
 	private int port;
 	private DiscordBot Bot;
+	private Path heartbeatFilePath;
 	 
-	MainListener(int port,String apiURL,String SteamAPIKey,String CDAvatarURL,String BotToken,String ChannelID,String RequestChannelID,String RequestTag) throws InterruptedException
+	MainListener(int port,String apiURL,String SteamAPIKey,String CDAvatarURL,String BotToken,String ChannelID,String RequestChannelID,String Difficulty) throws InterruptedException
 	{	
 		
 		this.port = port;
@@ -35,13 +39,15 @@ public class MainListener {
 		this.CDAvatarURL=CDAvatarURL;
 		this.ChannelID=ChannelID;
 		this.RequestChannelID=RequestChannelID;
-		this.RequestTag=RequestTag;
+		this.Difficulty=Difficulty;
 		if(!BotToken.equals("0"))
 		{	
 			System.out.println("Initializing Discord Bot");
 			Bot = new DiscordBot(BotToken);
 			
 		}
+
+		startHeartbeatLoop();
 		
 		new Thread(new Runnable() {
 			@Override
@@ -53,6 +59,76 @@ public class MainListener {
 				}
 			}
 		}).start();
+	}
+
+	private void startHeartbeatLoop()
+	{
+		if (!hasActiveDifficulty()) {
+			return;
+		}
+
+		heartbeatFilePath = Paths.get("heartbeat", Difficulty + ".json");
+		deleteHeartbeat();
+		writeHeartbeat();
+
+		Runtime.getRuntime().addShutdownHook(new Thread(() -> deleteHeartbeat()));
+
+		Thread heartbeatThread = new Thread(() -> {
+			while (true) {
+				try {
+					Thread.sleep(30000);
+					writeHeartbeat();
+				} catch (InterruptedException ignored) {
+					Thread.currentThread().interrupt();
+					return;
+				}
+			}
+		});
+		heartbeatThread.setDaemon(true);
+		heartbeatThread.setName("heartbeat-writer");
+		heartbeatThread.start();
+	}
+
+	private boolean hasActiveDifficulty()
+	{
+		return !Difficulty.equals("0") && !Difficulty.isEmpty();
+	}
+
+	private void writeHeartbeat()
+	{
+		if (heartbeatFilePath == null) {
+			return;
+		}
+
+		try {
+			Files.createDirectories(heartbeatFilePath.getParent());
+
+			JSONObject heartbeat = new JSONObject();
+			heartbeat.put("difficulty", Difficulty);
+			heartbeat.put("port", port);
+			heartbeat.put("updatedAt", System.currentTimeMillis());
+
+			Files.writeString(
+				heartbeatFilePath,
+				heartbeat.toString(2),
+				StandardCharsets.UTF_8
+			);
+		} catch (IOException e) {
+			System.out.println("Failed to write heartbeat file: " + e.getMessage());
+		}
+	}
+
+	private void deleteHeartbeat()
+	{
+		if (heartbeatFilePath == null) {
+			return;
+		}
+
+		try {
+			Files.deleteIfExists(heartbeatFilePath);
+		} catch (IOException e) {
+			System.out.println("Failed to delete heartbeat file: " + e.getMessage());
+		}
 	}
 	
 	private void SetupConnection()
@@ -197,7 +273,7 @@ public class MainListener {
 	
 	private boolean tryHandleDsResponse(String content)
 	{
-		if (Bot == null || RequestChannelID.equals("0") || RequestTag.equals("0") || RequestTag.isEmpty()) {
+		if (Bot == null || RequestChannelID.equals("0") || !hasActiveDifficulty()) {
 			return false;
 		}
 		
@@ -211,7 +287,7 @@ public class MainListener {
 			return true;
 		}
 		
-		Bot.sendToChannel(RequestChannelID, "/dsresponse " + RequestTag + " " + responseText);
+		Bot.sendToChannel(RequestChannelID, "/dsresponse " + Difficulty + " " + responseText);
 		return true;
 	}
 }

@@ -6,9 +6,17 @@ try {
   }
 }
 
+const fs = require('fs');
+const path = require('path');
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
+const HEARTBEAT_DIR = process.env.HEARTBEAT_DIR
+  ? path.resolve(process.env.HEARTBEAT_DIR)
+  : path.resolve(__dirname, '..', 'heartbeat');
+const HEARTBEAT_TTL_MS = Number.parseInt(process.env.HEARTBEAT_TTL_MS || '60000', 10);
+const HEARTBEAT_REFRESH_MS = 30000;
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in .env');
@@ -25,7 +33,9 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 
-const DIFFICULTIES = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
+const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'rank'];
+const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
+let activeDifficulties = [];
 
 function addDifficultyOption(commandBuilder) {
   return addDifficultyOptionWithRequired(commandBuilder, true);
@@ -35,14 +45,9 @@ function addDifficultyOptionWithRequired(commandBuilder, required) {
   return commandBuilder.addStringOption((option) =>
     option
       .setName('difficulty')
-      .setDescription('Difficulty level.')
+      .setDescription('Difficulty from active relay heartbeat files.')
       .setRequired(required)
-      .addChoices(
-        ...DIFFICULTIES.map((difficulty) => ({
-          name: difficulty,
-          value: difficulty,
-        })),
-      ),
+      .setAutocomplete(true),
   );
 }
 
@@ -81,31 +86,154 @@ function getMemberNickname(interaction) {
   return interaction.user.globalName || interaction.user.username;
 }
 
+function scanActiveDifficulties() {
+  if (!fs.existsSync(HEARTBEAT_DIR)) {
+    return [];
+  }
+
+  const now = Date.now();
+  const difficulties = new Set();
+
+  for (const fileName of fs.readdirSync(HEARTBEAT_DIR)) {
+    if (!fileName.toLowerCase().endsWith('.json')) {
+      continue;
+    }
+
+    const filePath = path.join(HEARTBEAT_DIR, fileName);
+
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const heartbeat = JSON.parse(raw);
+
+      if (typeof heartbeat.difficulty !== 'string' || heartbeat.difficulty.trim() === '') {
+        continue;
+      }
+
+      if (heartbeat.difficulty === '0') {
+        continue;
+      }
+
+      if (typeof heartbeat.updatedAt !== 'number') {
+        continue;
+      }
+
+      if (now - heartbeat.updatedAt > HEARTBEAT_TTL_MS) {
+        continue;
+      }
+
+      difficulties.add(heartbeat.difficulty.trim());
+    } catch (error) {
+      console.warn(`Skipping invalid heartbeat file: ${filePath}`, error.message);
+    }
+  }
+
+  return [...difficulties].sort((left, right) => left.localeCompare(right));
+}
+
+function refreshActiveDifficulties() {
+  activeDifficulties = scanActiveDifficulties();
+}
+
+function getActiveDifficulties() {
+  return activeDifficulties;
+}
+
+function getDefaultDifficulty() {
+  const activeDifficulties = getActiveDifficulties();
+  return activeDifficulties[0] || null;
+}
+
+function ensureValidDifficulty(difficulty) {
+  if (!difficulty || difficulty === NO_DIFFICULTY_VALUE) {
+    return false;
+  }
+
+  return getActiveDifficulties().includes(difficulty);
+}
+
 function buildRequestText(interaction) {
   const commandName = interaction.commandName;
 
   if (commandName === 'info') {
     const difficulty = interaction.options.getString('difficulty', true);
+
+    if (!ensureValidDifficulty(difficulty)) {
+      throw new Error('Selected difficulty is not active right now.');
+    }
+
     return `/dsrequest ${difficulty} info`;
   }
 
   if (commandName === 'vipinfo') {
-    return `/dsrequest ${DIFFICULTIES[0]} vipinfo ${getMemberNickname(interaction)}`;
+    const difficulty = getDefaultDifficulty();
+
+    if (!difficulty) {
+      throw new Error('No active difficulties are available right now.');
+    }
+
+    return `/dsrequest ${difficulty} vipinfo ${getMemberNickname(interaction)}`;
   }
 
   if (commandName === 'perk') {
     const difficulty = interaction.options.getString('difficulty', true);
+
+    if (!ensureValidDifficulty(difficulty)) {
+      throw new Error('Selected difficulty is not active right now.');
+    }
+
     const nickname = interaction.options.getString('nickname', true).trim();
     return `/dsrequest ${difficulty} perk ${nickname}`;
   }
 
-  const difficulty = interaction.options.getString('difficulty');
+  const selectedDifficulty = interaction.options.getString('difficulty');
 
-  if (difficulty) {
-    return `/dsrequest ${difficulty} rank`;
+  if (selectedDifficulty) {
+    if (!ensureValidDifficulty(selectedDifficulty)) {
+      throw new Error('Selected difficulty is not active right now.');
+    }
+
+    return `/dsrequest ${selectedDifficulty} rank`;
   }
 
-  return `/dsrequest ${DIFFICULTIES[0]} rank ${getMemberNickname(interaction)}`;
+  const difficulty = getDefaultDifficulty();
+
+  if (!difficulty) {
+    throw new Error('No active difficulties are available right now.');
+  }
+
+  return `/dsrequest ${difficulty} rank ${getMemberNickname(interaction)}`;
+}
+
+async function handleAutocomplete(interaction) {
+  const focusedOption = interaction.options.getFocused(true);
+
+  if (focusedOption.name !== 'difficulty') {
+    await interaction.respond([]);
+    return;
+  }
+
+  const search = String(focusedOption.value || '').toLowerCase();
+  const activeDifficulties = getActiveDifficulties();
+
+  if (activeDifficulties.length === 0) {
+    await interaction.respond([
+      {
+        name: 'No active difficulties found',
+        value: NO_DIFFICULTY_VALUE,
+      },
+    ]);
+    return;
+  }
+
+  const choices = activeDifficulties
+    .filter((difficulty) => difficulty.toLowerCase().includes(search))
+    .slice(0, 25)
+    .map((difficulty) => ({
+      name: difficulty,
+      value: difficulty,
+    }));
+
+  await interaction.respond(choices);
 }
 
 async function registerCommands() {
@@ -118,6 +246,7 @@ async function registerCommands() {
   console.log(
     `Registered commands: ${commandDefinitions.map((command) => `/${command.name}`).join(', ')}`,
   );
+  console.log(`Heartbeat directory: ${HEARTBEAT_DIR}`);
 }
 
 const client = new Client({
@@ -126,14 +255,24 @@ const client = new Client({
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+  console.log(`Active difficulties: ${activeDifficulties.join(', ') || 'none'}`);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    if (KNOWN_COMMANDS.includes(interaction.commandName)) {
+      await handleAutocomplete(interaction).catch((error) => {
+        console.error('Failed to handle autocomplete:', error);
+      });
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) {
     return;
   }
 
-  if (!['info', 'perk', 'vipinfo', 'rank'].includes(interaction.commandName)) {
+  if (!KNOWN_COMMANDS.includes(interaction.commandName)) {
     return;
   }
 
@@ -149,14 +288,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
       content: `Sent: \`${content}\``,
     });
   } catch (error) {
-    console.error('Failed to process command:', error);
+    console.error(`Failed to process command: ${error.message || error}`);
 
     const response = {
-      content: 'Failed to process the request.',
+      content: error.message || 'Failed to process the request.',
       flags: MessageFlags.Ephemeral,
     };
 
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.deferred) {
+      await interaction.editReply({
+        content: response.content,
+      }).catch(() => {});
+      return;
+    }
+
+    if (interaction.replied) {
       await interaction.followUp(response).catch(() => {});
       return;
     }
@@ -166,6 +312,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 (async () => {
+  refreshActiveDifficulties();
+  setInterval(refreshActiveDifficulties, HEARTBEAT_REFRESH_MS);
   await registerCommands();
   await client.login(TOKEN);
 })();

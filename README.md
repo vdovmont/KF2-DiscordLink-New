@@ -7,7 +7,7 @@ and also download **run.bat** and edit your info in the file there
 
 or run this on your cmd (must be in the same directory)
 ```bash
-java -jar KF2-Discord-Linker-1.1.5.jar port webhookURL SteamAPIKey CDAVatarURL(optional) DiscordBotToken(optional) ChannelID(optional) RequestChannelID(optional) RequestTag(optional)
+java -jar KF2-Discord-Linker-1.1.5.jar port webhookURL SteamAPIKey CDAVatarURL(optional) DiscordBotToken(optional) ChannelID(optional) RequestChannelID(optional) Difficulty(optional)
 ```
 
 ***fill 0 in optional arguments if you don't want to use that***
