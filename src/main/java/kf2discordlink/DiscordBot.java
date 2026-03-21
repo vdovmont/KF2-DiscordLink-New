@@ -42,21 +42,7 @@ public class DiscordBot extends ListenerAdapter
         
         long channelId = msg.getChannel().getIdLong();
         String content = msg.getContentRaw();
-        
-        if (channelId == Long.parseLong(Listener.RequestChannelID) && event.getAuthor().isBot())
-        {
-        	String requestText = extractRequestText(content);
-        	if (requestText != null) {
-        		try {
-        			Listener.sendMessage(requestText);
-        		} catch (IOException e) {
-        			e.printStackTrace();
-        			System.out.println("Cannot send "+requestText);
-        		}
-        		return;
-        	}
-        }
-        
+
         if(channelId==Long.parseLong(Listener.ChannelID) && !event.getAuthor().isBot())
         {
         	try {
@@ -67,32 +53,6 @@ public class DiscordBot extends ListenerAdapter
     		}
         }
         
-    }
-    
-    private String extractRequestText(String content)
-    {
-    	if (Listener.RequestChannelID.equals("0") || Listener.Difficulty.equals("0") || Listener.Difficulty.isEmpty()) {
-    		return null;
-    	}
-    	
-    	String prefix = "/dsrequest " + Listener.Difficulty;
-    	if (!content.startsWith(prefix)) {
-    		return null;
-    	}
-    	
-    	if (content.length() == prefix.length()) {
-    		return null;
-    	}
-    	
-    	if (content.charAt(prefix.length()) != ' ') {
-    		return null;
-    	}
-    	
-    	String payload = content.substring(prefix.length() + 1);
-    	if (payload.trim().isEmpty()) {
-    		return null;
-    	}
-    	return "/dsrequest " + payload;
     }
 
     private String getDisplayName(MessageReceivedEvent event)

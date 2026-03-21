@@ -7,6 +7,7 @@ try {
 }
 
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -17,6 +18,8 @@ const HEARTBEAT_DIR = process.env.HEARTBEAT_DIR
   : path.resolve(__dirname, '..', 'heartbeat');
 const HEARTBEAT_TTL_MS = Number.parseInt(process.env.HEARTBEAT_TTL_MS || '60000', 10);
 const HEARTBEAT_REFRESH_MS = 30000;
+const RELAY_HOST = process.env.RELAY_HOST || '127.0.0.1';
+const RELAY_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.RELAY_REQUEST_TIMEOUT_MS || '60000', 10);
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in .env');
@@ -35,7 +38,11 @@ const {
 
 const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'rank'];
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
+const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
+let activeRelayMap = new Map();
 let activeDifficulties = [];
+const relayQueues = new Map();
+const processingDifficulties = new Set();
 
 function addDifficultyOption(commandBuilder) {
   return addDifficultyOptionWithRequired(commandBuilder, true);
@@ -55,12 +62,12 @@ const commandDefinitions = [
   addDifficultyOption(
     new SlashCommandBuilder()
       .setName('info')
-      .setDescription('Post a request to see server information'),
+      .setDescription('Send a server info request to the matching relay'),
   ),
   addDifficultyOption(
     new SlashCommandBuilder()
       .setName('perk')
-      .setDescription('Post a request to see your perks information'),
+      .setDescription('Send a perk request to the matching relay'),
   ).addStringOption((option) =>
     option
       .setName('nickname')
@@ -69,11 +76,11 @@ const commandDefinitions = [
   ),
   new SlashCommandBuilder()
     .setName('vipinfo')
-    .setDescription('Post a request to see your VIP information'),
+    .setDescription('Send a VIP info request to the first active relay'),
   addDifficultyOptionWithRequired(
     new SlashCommandBuilder()
       .setName('rank')
-      .setDescription('Post a request to see rank information (about yourself or general)'),
+      .setDescription('Send a rank request to the matching relay'),
     false,
   ),
 ];
@@ -86,13 +93,33 @@ function getMemberNickname(interaction) {
   return interaction.user.globalName || interaction.user.username;
 }
 
-function scanActiveDifficulties() {
+function sortDifficulties(difficulties) {
+  const orderedKnown = [];
+  const unknown = [];
+
+  for (const difficulty of difficulties) {
+    if (DIFFICULTY_ORDER.includes(difficulty)) {
+      orderedKnown.push(difficulty);
+    } else {
+      unknown.push(difficulty);
+    }
+  }
+
+  orderedKnown.sort(
+    (left, right) => DIFFICULTY_ORDER.indexOf(left) - DIFFICULTY_ORDER.indexOf(right),
+  );
+  unknown.sort((left, right) => left.localeCompare(right));
+
+  return [...orderedKnown, ...unknown];
+}
+
+function scanActiveRelays() {
   if (!fs.existsSync(HEARTBEAT_DIR)) {
     return [];
   }
 
   const now = Date.now();
-  const difficulties = new Set();
+  const relays = [];
 
   for (const fileName of fs.readdirSync(HEARTBEAT_DIR)) {
     if (!fileName.toLowerCase().endsWith('.json')) {
@@ -121,26 +148,56 @@ function scanActiveDifficulties() {
         continue;
       }
 
-      difficulties.add(heartbeat.difficulty.trim());
+      const discordBotPort = Number.isInteger(heartbeat.discordBotPort)
+        ? heartbeat.discordBotPort
+        : null;
+
+      if (!discordBotPort) {
+        continue;
+      }
+
+      relays.push({
+        difficulty: heartbeat.difficulty.trim(),
+        port: heartbeat.port,
+        discordBotPort,
+        updatedAt: heartbeat.updatedAt,
+      });
     } catch (error) {
       console.warn(`Skipping invalid heartbeat file: ${filePath}`, error.message);
     }
   }
 
-  return [...difficulties].sort((left, right) => left.localeCompare(right));
+  return relays;
 }
 
-function refreshActiveDifficulties() {
-  activeDifficulties = scanActiveDifficulties();
+function refreshActiveRelays() {
+  const relays = scanActiveRelays();
+  const orderedDifficulties = sortDifficulties(relays.map((relay) => relay.difficulty));
+
+  activeRelayMap = new Map(
+    relays.map((relay) => [
+      relay.difficulty,
+      relay,
+    ]),
+  );
+  activeDifficulties = orderedDifficulties;
 }
 
 function getActiveDifficulties() {
   return activeDifficulties;
 }
 
-function getDefaultDifficulty() {
-  const activeDifficulties = getActiveDifficulties();
-  return activeDifficulties[0] || null;
+function getRelayByDifficulty(difficulty) {
+  return activeRelayMap.get(difficulty) || null;
+}
+
+function getDefaultRelay() {
+  const defaultDifficulty = getActiveDifficulties()[0];
+  if (!defaultDifficulty) {
+    return null;
+  }
+
+  return getRelayByDifficulty(defaultDifficulty);
 }
 
 function ensureValidDifficulty(difficulty) {
@@ -148,10 +205,18 @@ function ensureValidDifficulty(difficulty) {
     return false;
   }
 
-  return getActiveDifficulties().includes(difficulty);
+  return activeRelayMap.has(difficulty);
 }
 
-function buildRequestText(interaction) {
+function getRelayQueue(difficulty) {
+  if (!relayQueues.has(difficulty)) {
+    relayQueues.set(difficulty, []);
+  }
+
+  return relayQueues.get(difficulty);
+}
+
+function buildRelayRequest(interaction) {
   const commandName = interaction.commandName;
 
   if (commandName === 'info') {
@@ -161,17 +226,23 @@ function buildRequestText(interaction) {
       throw new Error('Selected difficulty is not active right now.');
     }
 
-    return `/dsrequest ${difficulty} info`;
+    return {
+      difficulty,
+      payload: '/dsrequest info',
+    };
   }
 
   if (commandName === 'vipinfo') {
-    const difficulty = getDefaultDifficulty();
+    const relay = getDefaultRelay();
 
-    if (!difficulty) {
+    if (!relay) {
       throw new Error('No active difficulties are available right now.');
     }
 
-    return `/dsrequest ${difficulty} vipinfo ${getMemberNickname(interaction)}`;
+    return {
+      difficulty: relay.difficulty,
+      payload: `/dsrequest vipinfo ${getMemberNickname(interaction)}`,
+    };
   }
 
   if (commandName === 'perk') {
@@ -182,7 +253,10 @@ function buildRequestText(interaction) {
     }
 
     const nickname = interaction.options.getString('nickname', true).trim();
-    return `/dsrequest ${difficulty} perk ${nickname}`;
+    return {
+      difficulty,
+      payload: `/dsrequest perk ${nickname}`,
+    };
   }
 
   const selectedDifficulty = interaction.options.getString('difficulty');
@@ -192,16 +266,171 @@ function buildRequestText(interaction) {
       throw new Error('Selected difficulty is not active right now.');
     }
 
-    return `/dsrequest ${selectedDifficulty} rank`;
+    return {
+      difficulty: selectedDifficulty,
+      payload: '/dsrequest rank',
+    };
   }
 
-  const difficulty = getDefaultDifficulty();
+  const relay = getDefaultRelay();
 
-  if (!difficulty) {
+  if (!relay) {
     throw new Error('No active difficulties are available right now.');
   }
 
-  return `/dsrequest ${difficulty} rank ${getMemberNickname(interaction)}`;
+  return {
+    difficulty: relay.difficulty,
+    payload: `/dsrequest rank ${getMemberNickname(interaction)}`,
+  };
+}
+
+function sendPayloadToRelay(relay, payload) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({
+      host: RELAY_HOST,
+      port: relay.discordBotPort,
+    });
+
+    let buffer = '';
+    let settled = false;
+
+    const fail = (message) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      socket.destroy();
+      reject(new Error(message));
+    };
+
+    socket.setTimeout(RELAY_REQUEST_TIMEOUT_MS);
+
+    socket.once('connect', () => {
+      const requestLine = JSON.stringify({ payload });
+      socket.write(`${requestLine}\n`);
+    });
+
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const newlineIndex = buffer.indexOf('\n');
+
+      if (newlineIndex === -1) {
+        return;
+      }
+
+      const line = buffer.slice(0, newlineIndex).trim();
+      if (!line) {
+        fail('Relay returned an empty response.');
+        return;
+      }
+
+      try {
+        const response = JSON.parse(line);
+
+        if (response.error) {
+          fail(response.error);
+          return;
+        }
+
+        if (typeof response.payload !== 'string' || response.payload.trim() === '') {
+          fail('Relay returned an invalid payload.');
+          return;
+        }
+
+        if (!settled) {
+          settled = true;
+          socket.end();
+          resolve(response.payload.trim());
+        }
+      } catch (error) {
+        fail('Relay returned malformed JSON.');
+      }
+    });
+
+    socket.on('timeout', () => {
+      fail('Timed out waiting for the relay response.');
+    });
+
+    socket.on('error', (error) => {
+      fail(`Failed to connect to relay on port ${relay.discordBotPort}: ${error.message}`);
+    });
+
+    socket.on('close', () => {
+      if (!settled) {
+        fail('Relay closed the connection before sending a response.');
+      }
+    });
+  });
+}
+
+async function processRelayQueue(difficulty) {
+  if (processingDifficulties.has(difficulty)) {
+    return;
+  }
+
+  processingDifficulties.add(difficulty);
+  const queue = getRelayQueue(difficulty);
+
+  try {
+    while (queue.length > 0) {
+      const job = queue[0];
+
+      try {
+        const relay = getRelayByDifficulty(difficulty);
+
+        if (!relay) {
+          throw new Error('Selected difficulty is not active right now.');
+        }
+
+        if (job.wasQueued) {
+          await job.interaction.editReply({
+            content: `Your request for "${difficulty}" is now being processed...`,
+          });
+        }
+
+        const responsePayload = await sendPayloadToRelay(relay, job.request.payload);
+        await job.interaction.channel.send(responsePayload);
+        await job.interaction.editReply({
+          content: `Sent to relay "${difficulty}" and posted the response.`,
+        });
+      } catch (error) {
+        console.error(`Failed to process command: ${error.message || error}`);
+        await job.interaction.editReply({
+          content: error.message || 'Failed to process the request.',
+        }).catch(() => {});
+      } finally {
+        queue.shift();
+      }
+    }
+  } finally {
+    processingDifficulties.delete(difficulty);
+
+    if (queue.length === 0) {
+      relayQueues.delete(difficulty);
+    }
+  }
+}
+
+async function enqueueRelayRequest(interaction, request) {
+  const queue = getRelayQueue(request.difficulty);
+  const isAlreadyBusy = processingDifficulties.has(request.difficulty) || queue.length > 0;
+
+  queue.push({
+    interaction,
+    request,
+    wasQueued: isAlreadyBusy,
+  });
+
+  const queuePosition = queue.length + (processingDifficulties.has(request.difficulty) ? 1 : 0);
+
+  if (isAlreadyBusy) {
+    await interaction.editReply({
+      content: `Please wait until the previous request for "${request.difficulty}" is done. Your request is queued${queuePosition > 1 ? ` (position ${queuePosition})` : ''}.`,
+    });
+  }
+
+  void processRelayQueue(request.difficulty);
 }
 
 async function handleAutocomplete(interaction) {
@@ -213,9 +442,9 @@ async function handleAutocomplete(interaction) {
   }
 
   const search = String(focusedOption.value || '').toLowerCase();
-  const activeDifficulties = getActiveDifficulties();
+  const availableDifficulties = getActiveDifficulties();
 
-  if (activeDifficulties.length === 0) {
+  if (availableDifficulties.length === 0) {
     await interaction.respond([
       {
         name: 'No active difficulties found',
@@ -225,7 +454,7 @@ async function handleAutocomplete(interaction) {
     return;
   }
 
-  const choices = activeDifficulties
+  const choices = availableDifficulties
     .filter((difficulty) => difficulty.toLowerCase().includes(search))
     .slice(0, 25)
     .map((difficulty) => ({
@@ -262,7 +491,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isAutocomplete()) {
     if (KNOWN_COMMANDS.includes(interaction.commandName)) {
       await handleAutocomplete(interaction).catch((error) => {
-        console.error('Failed to handle autocomplete:', error);
+        console.error(`Failed to handle autocomplete: ${error.message || error}`);
       });
     }
     return;
@@ -281,12 +510,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       flags: MessageFlags.Ephemeral,
     });
 
-    const content = buildRequestText(interaction);
-
-    await interaction.channel.send(content);
-    await interaction.editReply({
-      content: `Sent: \`${content}\``,
-    });
+    const request = buildRelayRequest(interaction);
+    await enqueueRelayRequest(interaction, request);
   } catch (error) {
     console.error(`Failed to process command: ${error.message || error}`);
 
@@ -312,8 +537,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 (async () => {
-  refreshActiveDifficulties();
-  setInterval(refreshActiveDifficulties, HEARTBEAT_REFRESH_MS);
+  refreshActiveRelays();
+  setInterval(refreshActiveRelays, HEARTBEAT_REFRESH_MS);
   await registerCommands();
   await client.login(TOKEN);
 })();

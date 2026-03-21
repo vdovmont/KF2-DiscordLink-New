@@ -7,7 +7,7 @@ and also download **run.bat** and edit your info in the file there
 
 or run this on your cmd (must be in the same directory)
 ```bash
-java -jar KF2-Discord-Linker-1.1.5.jar port webhookURL SteamAPIKey CDAVatarURL(optional) DiscordBotToken(optional) ChannelID(optional) RequestChannelID(optional) Difficulty(optional)
+java -jar KF2-Discord-Linker-1.1.6.jar port webhookURL SteamAPIKey CDAVatarURL(optional) DiscordBotToken(optional) ChannelID(optional) Difficulty(optional)
 ```
 
 ***fill 0 in optional arguments if you don't want to use that***
@@ -27,7 +27,7 @@ If you already has it - then just open terminal inside this project folder and r
 Now you can look for your .jar file inside **build/libs** folder. Or you can run it through the same console by using this command:
 
 ```bash
-java -jar build/libs/KF2-Discord-Linker-1.1.5.jar 2424 https://killingfloor2.com/ ad2eSDSGJSU2dfd148 0 0 0 0 0
+java -jar build/libs/KF2-Discord-Linker-1.1.6.jar 2424 https://killingfloor2.com/ ad2eSDSGJSU2dfd148 0 0 0 0
 ```
 
 # How to use discord script in Windows

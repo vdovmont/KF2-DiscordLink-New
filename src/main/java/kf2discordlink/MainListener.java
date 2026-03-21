@@ -21,44 +21,66 @@ public class MainListener {
 	public String SteamAPIKey ="";
 	public String CDAvatarURL= "";
 	public String ChannelID = "";
-	public String RequestChannelID = "";
 	public String Difficulty = "";
+	private static final int MIN_PORT = 1;
+	private static final int MAX_PORT = 65535;
+	private static final int CONTROL_PORT_OFFSET = 100;
+	private static final int CONTROL_REQUEST_TIMEOUT_MS = 60000;
 	private Socket socket;
 	private PrintWriter out;
 	private BufferedReader in;
 	private int port;
+	private int discordBotPort;
 	private DiscordBot Bot;
 	private Path heartbeatFilePath;
+	private ServerSocket controlServerSocket;
+	private final Object pendingRequestLock = new Object();
+	private PendingControlRequest pendingControlRequest;
+
+	private static class PendingControlRequest {
+		public final Socket socket;
+		public final PrintWriter writer;
+
+		PendingControlRequest(Socket socket, PrintWriter writer) {
+			this.socket = socket;
+			this.writer = writer;
+		}
+	}
 	 
-	MainListener(int port,String apiURL,String SteamAPIKey,String CDAvatarURL,String BotToken,String ChannelID,String RequestChannelID,String Difficulty) throws InterruptedException
+	MainListener(int port,String apiURL,String SteamAPIKey,String CDAvatarURL,String BotToken,String ChannelID,String Difficulty) throws InterruptedException
 	{	
-		
 		this.port = port;
+		this.discordBotPort = resolveControlPort(port, CONTROL_PORT_OFFSET);
 		this.apiURL=apiURL;
 		this.SteamAPIKey=SteamAPIKey;
 		this.CDAvatarURL=CDAvatarURL;
 		this.ChannelID=ChannelID;
-		this.RequestChannelID=RequestChannelID;
 		this.Difficulty=Difficulty;
 		if(!BotToken.equals("0"))
 		{	
 			System.out.println("Initializing Discord Bot");
 			Bot = new DiscordBot(BotToken);
-			
 		}
 
 		startHeartbeatLoop();
+		startControlServer();
 		
 		new Thread(new Runnable() {
 			@Override
 			public void run(){
-				try {
-					SetupConnection();
-				} catch (IllegalStateException e) {
-					System.err.println(e.getMessage());
-				}
+				SetupConnection();
 			}
 		}).start();
+	}
+
+	private int resolveControlPort(int basePort, int offset)
+	{
+		int rawPort = basePort + offset;
+		if (rawPort <= MAX_PORT) {
+			return rawPort;
+		}
+
+		return rawPort - MAX_PORT;
 	}
 
 	private void startHeartbeatLoop()
@@ -71,7 +93,11 @@ public class MainListener {
 		deleteHeartbeat();
 		writeHeartbeat();
 
-		Runtime.getRuntime().addShutdownHook(new Thread(() -> deleteHeartbeat()));
+		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+			deleteHeartbeat();
+			closePendingControlRequest();
+			closeControlServer();
+		}));
 
 		Thread heartbeatThread = new Thread(() -> {
 			while (true) {
@@ -87,6 +113,153 @@ public class MainListener {
 		heartbeatThread.setDaemon(true);
 		heartbeatThread.setName("heartbeat-writer");
 		heartbeatThread.start();
+	}
+
+	private void startControlServer()
+	{
+		if (!hasActiveDifficulty()) {
+			return;
+		}
+
+		Thread controlServerThread = new Thread(() -> {
+			try {
+				controlServerSocket = new ServerSocket();
+				controlServerSocket.bind(new InetSocketAddress("127.0.0.1", discordBotPort));
+				System.out.println("Control server listening on 127.0.0.1:" + discordBotPort);
+
+				while (true) {
+					Socket clientSocket = controlServerSocket.accept();
+					handleControlClient(clientSocket);
+				}
+			} catch (IOException e) {
+				System.out.println("Control server stopped: " + e.getMessage());
+			}
+		});
+		controlServerThread.setDaemon(true);
+		controlServerThread.setName("control-server");
+		controlServerThread.start();
+	}
+
+	private void handleControlClient(Socket clientSocket)
+	{
+		new Thread(() -> {
+			try {
+				clientSocket.setSoTimeout(10000);
+				BufferedReader clientReader = new BufferedReader(
+					new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8)
+				);
+				PrintWriter clientWriter = new PrintWriter(
+					new OutputStreamWriter(clientSocket.getOutputStream(), StandardCharsets.UTF_8),
+					true
+				);
+
+				String line = clientReader.readLine();
+				if (line == null || line.trim().isEmpty()) {
+					sendJsonAndClose(clientSocket, clientWriter, null, "Missing payload");
+					return;
+				}
+
+				JSONObject request = new JSONObject(line);
+				String payload = request.optString("payload", "").trim();
+				if (payload.isEmpty()) {
+					sendJsonAndClose(clientSocket, clientWriter, null, "Missing payload");
+					return;
+				}
+
+				synchronized (pendingRequestLock) {
+					if (pendingControlRequest != null) {
+						sendJsonAndClose(clientSocket, clientWriter, null, "Relay is already processing another request");
+						return;
+					}
+
+					pendingControlRequest = new PendingControlRequest(clientSocket, clientWriter);
+				}
+
+				try {
+					sendMessage(payload);
+				} catch (IOException e) {
+					clearPendingControlRequest();
+					sendJsonAndClose(clientSocket, clientWriter, null, "Failed to forward payload to KF2");
+					return;
+				}
+
+				Thread timeoutThread = new Thread(() -> {
+					try {
+						Thread.sleep(CONTROL_REQUEST_TIMEOUT_MS);
+						synchronized (pendingRequestLock) {
+							if (pendingControlRequest != null && pendingControlRequest.socket == clientSocket) {
+								sendJsonAndClose(
+									pendingControlRequest.socket,
+									pendingControlRequest.writer,
+									null,
+									"Timed out waiting for /dsresponse"
+								);
+								pendingControlRequest = null;
+							}
+						}
+					} catch (InterruptedException ignored) {
+						Thread.currentThread().interrupt();
+					}
+				});
+				timeoutThread.setDaemon(true);
+				timeoutThread.start();
+			} catch (Exception e) {
+				try {
+					clientSocket.close();
+				} catch (IOException ignored) {}
+			}
+		}).start();
+	}
+
+	private void sendJsonAndClose(Socket socket, PrintWriter writer, String payload, String error)
+	{
+		try {
+			JSONObject response = new JSONObject();
+			if (payload != null) {
+				response.put("payload", payload);
+			}
+			if (error != null) {
+				response.put("error", error);
+			}
+			writer.println(response.toString());
+		} finally {
+			try {
+				socket.close();
+			} catch (IOException ignored) {}
+		}
+	}
+
+	private void clearPendingControlRequest()
+	{
+		synchronized (pendingRequestLock) {
+			pendingControlRequest = null;
+		}
+	}
+
+	private void closePendingControlRequest()
+	{
+		synchronized (pendingRequestLock) {
+			if (pendingControlRequest == null) {
+				return;
+			}
+
+			try {
+				pendingControlRequest.socket.close();
+			} catch (IOException ignored) {}
+
+			pendingControlRequest = null;
+		}
+	}
+
+	private void closeControlServer()
+	{
+		if (controlServerSocket == null) {
+			return;
+		}
+
+		try {
+			controlServerSocket.close();
+		} catch (IOException ignored) {}
 	}
 
 	private boolean hasActiveDifficulty()
@@ -106,6 +279,7 @@ public class MainListener {
 			JSONObject heartbeat = new JSONObject();
 			heartbeat.put("difficulty", Difficulty);
 			heartbeat.put("port", port);
+			heartbeat.put("discordBotPort", discordBotPort);
 			heartbeat.put("updatedAt", System.currentTimeMillis());
 
 			Files.writeString(
@@ -133,10 +307,9 @@ public class MainListener {
 	
 	private void SetupConnection()
 	{
-		if (Bot == null) {
-			throw new IllegalStateException("Discord Bot has not been initialized yet!");
+		if (Bot != null) {
+			Bot.SetListener(this);
 		}
-		Bot.SetListener(this);
 
 		while (true) {
 			try {
@@ -180,16 +353,17 @@ public class MainListener {
 		return Text;
 	}
 	
-
-	
 	public void sendMessage(String msg) throws IOException{
+        if (out == null) {
+        	throw new IOException("KF2 socket is not connected");
+        }
         out.println(msg);
     }
 
 	private void stopConnection(){
-        try { in.close(); } catch(Exception ignored){}
-        try { out.close(); } catch(Exception ignored){}
-		try { socket.close(); } catch(Exception ignored){}
+        try { if (in != null) in.close(); } catch(Exception ignored){}
+        try { if (out != null) out.close(); } catch(Exception ignored){}
+		try { if (socket != null) socket.close(); } catch(Exception ignored){}
     }
     
 	private String[] ExtractMessageInfo(String Message)
@@ -213,7 +387,7 @@ public class MainListener {
     	String content=RawArr[2];
     	
     	try{
-	        URL url = new URL("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key="+SteamAPIKey+"&steamids="+SteamID);
+	        URL url = URI.create("https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key="+SteamAPIKey+"&steamids="+SteamID).toURL();
 	        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
 			connection.setConnectTimeout(5000);
 			connection.setReadTimeout(5000);
@@ -251,7 +425,7 @@ public class MainListener {
      	        
      	        System.out.println(payloadData[1]+": "+payloadData[2]);
      	        
-     	        URL url = new URL(apiURL);
+     	        URL url = URI.create(apiURL).toURL();
      	        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
     	        connection.setRequestMethod("POST");
     	        connection.setDoOutput(true);
@@ -266,7 +440,7 @@ public class MainListener {
     	        OutputStream stream = connection.getOutputStream();
     	        stream.write(out);
     	        
-    	        System.out.println(connection.getResponseCode() + " " + connection.getResponseMessage()); // THis is optional
+    	        System.out.println(connection.getResponseCode() + " " + connection.getResponseMessage());
     	        stream.flush();
     	        connection.disconnect();
     	    } catch (Exception e) {
@@ -278,21 +452,20 @@ public class MainListener {
 	
 	private boolean tryHandleDsResponse(String content)
 	{
-		if (Bot == null || RequestChannelID.equals("0") || !hasActiveDifficulty()) {
-			return false;
-		}
-		
 		String prefix = "/dsresponse ";
 		if (!content.startsWith(prefix)) {
 			return false;
 		}
 		
 		String responseText = content.substring(prefix.length());
-		if (responseText.isEmpty()) {
-			return true;
+		String payload = "/dsresponse " + Difficulty + " " + responseText;
+
+		synchronized (pendingRequestLock) {
+			if (pendingControlRequest != null) {
+				sendJsonAndClose(pendingControlRequest.socket, pendingControlRequest.writer, payload, null);
+				pendingControlRequest = null;
+			}
 		}
-		
-		Bot.sendToChannel(RequestChannelID, "/dsresponse " + Difficulty + " " + responseText);
 		return true;
 	}
 }
