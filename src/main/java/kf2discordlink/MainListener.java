@@ -121,6 +121,10 @@ public class MainListener {
     	String[] OutString = new String[4];
  
     	String[] RawArr = Message.split(Pattern.quote("^$"));
+    	if (RawArr.length < 3)
+    	{
+    		throw new IllegalArgumentException("Unexpected relay payload: " + Message);
+    	}
     	if (RawArr[0].equals("CDC"))
     	{
     		OutString[0]="1";OutString[1]=RawArr[1];OutString[2]=RawArr[2];OutString[3]=CDAvatarURL;
@@ -162,16 +166,17 @@ public class MainListener {
     }
 	private void PostRequest(String Message)
     {
-    	 try{
-    	        String[] payloadData = ExtractMessageInfo(Message);
-    	        
-    	        System.out.println(payloadData[1]+": "+payloadData[2]);
-    	        if (tryHandleDsResponse(payloadData[2])) {
-    	        	return;
-    	        }
-    	        
-    	        URL url = new URL(apiURL);
-    	        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+     	 try{
+     	        if (tryHandleDsResponse(Message)) {
+     	        	return;
+     	        }
+     	        
+     	        String[] payloadData = ExtractMessageInfo(Message);
+     	        
+     	        System.out.println(payloadData[1]+": "+payloadData[2]);
+     	        
+     	        URL url = new URL(apiURL);
+     	        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
     	        connection.setRequestMethod("POST");
     	        connection.setDoOutput(true);
     	        connection.setRequestProperty("Content-Type","application/json");
