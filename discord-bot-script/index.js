@@ -498,6 +498,33 @@ function parsePerkEntries(responsePayload) {
   return entries;
 }
 
+function parseVipInfo(responsePayload) {
+  const responseText = extractRelayResponseText(responsePayload);
+
+  let parsedPayload;
+  try {
+    parsedPayload = JSON.parse(responseText);
+  } catch (error) {
+    return null;
+  }
+
+  if (!parsedPayload || typeof parsedPayload.vip !== 'object' || parsedPayload.vip === null) {
+    return null;
+  }
+
+  const vipType = typeof parsedPayload.vip.type === 'string' ? parsedPayload.vip.type.trim() : '';
+  const daysLeft = Number.parseInt(parsedPayload.vip.daysLeft, 10);
+
+  if (!vipType || Number.isNaN(daysLeft)) {
+    return null;
+  }
+
+  return {
+    type: vipType,
+    daysLeft,
+  };
+}
+
 function resolveGuildEmoji(interaction, emojiName) {
   const emoji = interaction.guild?.emojis?.cache?.find((guildEmoji) => guildEmoji.name === emojiName);
   return emoji ? emoji.toString() : `:${emojiName}:`;
@@ -543,9 +570,31 @@ function formatPerkResponse(interaction, request, responsePayload) {
   return lines.join('\n');
 }
 
+function formatVipInfoResponse(request, responsePayload) {
+  if (request.commandName !== 'vipinfo') {
+    return responsePayload;
+  }
+
+  const vipInfo = parseVipInfo(responsePayload);
+  if (!vipInfo) {
+    return responsePayload;
+  }
+
+  if (vipInfo.type.toLowerCase() === 'none' || vipInfo.daysLeft <= 0) {
+    return `You don't have VIP or your VIP already expired`;
+  }
+
+  const dayLabel = vipInfo.daysLeft === 1 ? 'day' : 'days';
+  return `You have ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
+}
+
 function formatResponse(interaction, request, responsePayload) {
   if (request.commandName === 'perk') {
     return formatPerkResponse(interaction, request, responsePayload);
+  }
+
+  if (request.commandName === 'vipinfo') {
+    return formatVipInfoResponse(request, responsePayload);
   }
 
   return responsePayload;
