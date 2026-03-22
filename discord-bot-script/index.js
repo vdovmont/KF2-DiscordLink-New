@@ -36,7 +36,7 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 
-const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'rank'];
+const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'rank', 'example'];
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
 let activeRelayMap = new Map();
@@ -123,6 +123,17 @@ const commandDefinitions = [
       ),
     false,
   )),
+  addHiddenOption(
+    new SlashCommandBuilder()
+      .setName('example')
+      .setDescription('Preview a response payload without using a relay')
+      .addStringOption((option) =>
+        option
+          .setName('response')
+          .setDescription('Text to treat as the relay response payload')
+          .setRequired(true),
+      ),
+  ),
 ];
 
 function getMemberNickname(interaction) {
@@ -549,6 +560,27 @@ async function enqueueRelayRequest(interaction, request) {
   void processRelayQueue(request.difficulty);
 }
 
+async function handleExampleCommand(interaction) {
+  const responsePayload = interaction.options.getString('response', true).trim();
+  const hidden = interaction.options.getBoolean('hidden') || false;
+
+  if (!responsePayload) {
+    throw new Error('Provide a response payload for /example.');
+  }
+
+  if (hidden) {
+    await interaction.editReply({
+      content: responsePayload,
+    });
+    return;
+  }
+
+  await interaction.channel.send(responsePayload);
+  await interaction.editReply({
+    content: 'Posted example response.',
+  });
+}
+
 async function handleAutocomplete(interaction) {
   const focusedOption = interaction.options.getFocused(true);
 
@@ -625,6 +657,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.deferReply({
       flags: MessageFlags.Ephemeral,
     });
+
+    if (interaction.commandName === 'example') {
+      await handleExampleCommand(interaction);
+      return;
+    }
 
     const request = buildRelayRequest(interaction);
     await enqueueRelayRequest(interaction, request);
