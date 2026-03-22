@@ -39,6 +39,19 @@ const {
 const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'rank', 'example'];
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
+const PERK_DISPLAY_ORDER = [
+  { key: 'berserker', label: 'Berserker', emojiName: 'KFZerker', aliases: ['berserker'] },
+  { key: 'commando', label: 'Commando', emojiName: 'KFMando', aliases: ['commando'] },
+  { key: 'fieldmedic', label: 'Medic', emojiName: 'KFMed', aliases: ['medic', 'field medic', 'fieldmedic'] },
+  { key: 'support', label: 'Support', emojiName: 'KFSupp', aliases: ['support', 'support specialist', 'supportspecialist'] },
+  { key: 'firebug', label: 'Firebug', emojiName: 'KFFB', aliases: ['firebug'] },
+  { key: 'demolitionist', label: 'Demolitionist', emojiName: 'KFDemo', aliases: ['demolitionist', 'demolitionnist'] },
+  { key: 'gunslinger', label: 'Gunslinger', emojiName: 'KFSlinger', aliases: ['gunslinger'] },
+  { key: 'sharpshooter', label: 'Sharpshooter', emojiName: 'KFSharpy', aliases: ['sharpshooter'] },
+  { key: 'swat', label: 'SWAT', emojiName: 'KFSWAT', aliases: ['swat'] },
+  { key: 'engineer', label: 'Engineer', emojiName: 'KFEngy', aliases: ['engineer'] },
+  { key: 'survivalist', label: 'Survivalist', emojiName: 'KFSurv', aliases: ['survivalist'] },
+];
 let activeRelayMap = new Map();
 let activeDifficulties = [];
 const relayQueues = new Map();
@@ -129,9 +142,27 @@ const commandDefinitions = [
       .setDescription('Preview a response payload without using a relay')
       .addStringOption((option) =>
         option
+          .setName('command')
+          .setDescription('Command type to mimic when formatting the response')
+          .setRequired(true)
+          .addChoices(
+            { name: 'info', value: 'info' },
+            { name: 'perk', value: 'perk' },
+            { name: 'vipinfo', value: 'vipinfo' },
+            { name: 'rank', value: 'rank' },
+          ),
+      )
+      .addStringOption((option) =>
+        option
           .setName('response')
           .setDescription('Text to treat as the relay response payload')
           .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('target')
+          .setDescription('Player label to show in formatted examples like /perk')
+          .setRequired(false),
       ),
   ),
 ];
@@ -297,6 +328,7 @@ function buildRelayRequest(interaction) {
     }
 
     return {
+      commandName,
       difficulty,
       payload: '/dsrequest info',
       hidden,
@@ -326,6 +358,7 @@ function buildRelayRequest(interaction) {
     }
 
     return {
+      commandName,
       difficulty: relay.difficulty,
       payload: nickname
         ? `/dsrequest vipinfo nickname:${nickname.trim()}`
@@ -357,7 +390,9 @@ function buildRelayRequest(interaction) {
     }
 
     return {
+      commandName,
       difficulty: relay.difficulty,
+      requestedTarget: nickname ? nickname.trim() : steamId.trim(),
       payload: nickname
         ? `/dsrequest perk nickname:${nickname.trim()}`
         : `/dsrequest perk steamid:${steamId.trim()}`,
@@ -384,6 +419,7 @@ function buildRelayRequest(interaction) {
     }
 
     return {
+      commandName,
       difficulty: selectedDifficulty,
       payload: '/dsrequest rank',
       hidden,
@@ -397,12 +433,128 @@ function buildRelayRequest(interaction) {
   }
 
   return {
+    commandName,
     difficulty: relay.difficulty,
     payload: nickname
       ? `/dsrequest rank nickname:${nickname.trim()}`
       : `/dsrequest rank steamid:${steamId.trim()}`,
     hidden,
   };
+}
+
+function normalizePerkName(value) {
+  return value.toLowerCase().replace(/[^a-z]/g, '');
+}
+
+function findPerkDefinition(value) {
+  const normalizedValue = normalizePerkName(value);
+  return PERK_DISPLAY_ORDER.find((perk) =>
+    perk.aliases.some((alias) => normalizePerkName(alias) === normalizedValue),
+  ) || null;
+}
+
+function extractRelayResponseText(responsePayload) {
+  return responsePayload.replace(/^\/dsresponse\s*/i, '').trim();
+}
+
+function parsePerkEntries(responsePayload) {
+  const responseText = extractRelayResponseText(responsePayload);
+
+  let parsedPayload;
+  try {
+    parsedPayload = JSON.parse(responseText);
+  } catch (error) {
+    return [];
+  }
+
+  if (!parsedPayload || !Array.isArray(parsedPayload.perks)) {
+    return [];
+  }
+
+  const entries = [];
+
+  for (const rawPerk of parsedPayload.perks) {
+    if (!rawPerk || typeof rawPerk.name !== 'string') {
+      continue;
+    }
+
+    const perk = findPerkDefinition(rawPerk.name);
+    if (!perk) {
+      continue;
+    }
+
+    const prestige = Number.parseInt(rawPerk.prestige, 10);
+    const level = Number.parseInt(rawPerk.level, 10);
+
+    entries.push({
+      key: perk.key,
+      label: perk.label,
+      emojiName: perk.emojiName,
+      prestige: Number.isNaN(prestige) ? 0 : prestige,
+      level: Number.isNaN(level) ? 0 : level,
+    });
+  }
+
+  return entries;
+}
+
+function resolveGuildEmoji(interaction, emojiName) {
+  const emoji = interaction.guild?.emojis?.cache?.find((guildEmoji) => guildEmoji.name === emojiName);
+  return emoji ? emoji.toString() : `:${emojiName}:`;
+}
+
+function formatPerkResponse(interaction, request, responsePayload) {
+  if (request.commandName !== 'perk') {
+    return responsePayload;
+  }
+
+  const perkEntries = parsePerkEntries(responsePayload);
+  if (perkEntries.length === 0) {
+    return responsePayload;
+  }
+
+  const entriesByKey = new Map(perkEntries.map((entry) => [entry.key, entry]));
+  const lines = [request.requestedTarget || 'Player'];
+  const longestLabelLength = PERK_DISPLAY_ORDER.reduce(
+    (maxLength, perk) => Math.max(maxLength, perk.label.length),
+    0,
+  );
+
+  for (const perk of PERK_DISPLAY_ORDER) {
+    const entry = entriesByKey.get(perk.key);
+    if (!entry) {
+      continue;
+    }
+
+    const paddedLabel = perk.label.padEnd(longestLabelLength, ' ');
+    lines.push(`${resolveGuildEmoji(interaction, perk.emojiName)} ${paddedLabel}: ${entry.prestige}-${entry.level}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatResponse(interaction, request, responsePayload) {
+  if (request.commandName === 'perk') {
+    return formatPerkResponse(interaction, request, responsePayload);
+  }
+
+  return responsePayload;
+}
+
+async function postResponse(interaction, request, responsePayload, successMessage) {
+  const formattedResponse = formatResponse(interaction, request, responsePayload);
+
+  if (request.hidden) {
+    await interaction.editReply({
+      content: formattedResponse,
+    });
+    return;
+  }
+
+  await interaction.channel.send(formattedResponse);
+  await interaction.editReply({
+    content: successMessage,
+  });
 }
 
 function sendPayloadToRelay(relay, payload) {
@@ -511,16 +663,12 @@ async function processRelayQueue(difficulty) {
         }
 
         const responsePayload = await sendPayloadToRelay(relay, job.request.payload);
-        if (job.request.hidden) {
-          await job.interaction.editReply({
-            content: responsePayload,
-          });
-        } else {
-          await job.interaction.channel.send(responsePayload);
-          await job.interaction.editReply({
-            content: `Sent to relay "${difficulty}" and posted the response.`,
-          });
-        }
+        await postResponse(
+          job.interaction,
+          job.request,
+          responsePayload,
+          `Sent to relay "${difficulty}" and posted the response.`,
+        );
       } catch (error) {
         console.error(`Failed to process command: ${error.message || error}`);
         await job.interaction.editReply({
@@ -561,6 +709,8 @@ async function enqueueRelayRequest(interaction, request) {
 }
 
 async function handleExampleCommand(interaction) {
+  const commandName = interaction.options.getString('command', true);
+  const requestedTarget = interaction.options.getString('target')?.trim();
   const responsePayload = interaction.options.getString('response', true).trim();
   const hidden = interaction.options.getBoolean('hidden') || false;
 
@@ -568,17 +718,16 @@ async function handleExampleCommand(interaction) {
     throw new Error('Provide a response payload for /example.');
   }
 
-  if (hidden) {
-    await interaction.editReply({
-      content: responsePayload,
-    });
-    return;
-  }
-
-  await interaction.channel.send(responsePayload);
-  await interaction.editReply({
-    content: 'Posted example response.',
-  });
+  await postResponse(
+    interaction,
+    {
+      commandName,
+      requestedTarget,
+      hidden,
+    },
+    responsePayload,
+    `Posted example response for "/${commandName}".`,
+  );
 }
 
 async function handleAutocomplete(interaction) {
