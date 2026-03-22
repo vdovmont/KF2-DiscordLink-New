@@ -48,6 +48,15 @@ function addDifficultyOption(commandBuilder) {
   return addDifficultyOptionWithRequired(commandBuilder, true);
 }
 
+function addHiddenOption(commandBuilder) {
+  return commandBuilder.addBooleanOption((option) =>
+    option
+      .setName('hidden')
+      .setDescription('If true, only you will see the response')
+      .setRequired(false),
+  );
+}
+
 function addDifficultyOptionWithRequired(commandBuilder, required) {
   return commandBuilder.addStringOption((option) =>
     option
@@ -59,27 +68,29 @@ function addDifficultyOptionWithRequired(commandBuilder, required) {
 }
 
 const commandDefinitions = [
-  addDifficultyOption(
+  addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
       .setName('info')
       .setDescription('Send a server info request to the matching relay'),
-  ),
-  addDifficultyOption(
+  )),
+  addHiddenOption(
     new SlashCommandBuilder()
       .setName('perk')
-      .setDescription('Send a perk request to the matching relay'),
-  ).addStringOption((option) =>
-    option
-      .setName('nickname')
-      .setDescription('Discord nickname or Steam nickname')
-      .setRequired(false),
-  ).addStringOption((option) =>
-    option
-      .setName('steamid')
-      .setDescription('Steam ID64')
-      .setRequired(false),
+      .setDescription('Send a perk request to the first active relay')
+      .addStringOption((option) =>
+        option
+          .setName('nickname')
+          .setDescription('Discord nickname or Steam nickname')
+          .setRequired(false),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('steamid')
+          .setDescription('Steam ID64')
+          .setRequired(false),
+      ),
   ),
-  new SlashCommandBuilder()
+  addHiddenOption(new SlashCommandBuilder()
     .setName('vipinfo')
     .setDescription('Send a VIP info request to the first active relay')
     .addStringOption((option) =>
@@ -93,8 +104,8 @@ const commandDefinitions = [
         .setName('steamid')
         .setDescription('Steam ID64')
         .setRequired(false),
-    ),
-  addDifficultyOptionWithRequired(
+    )),
+  addHiddenOption(addDifficultyOptionWithRequired(
     new SlashCommandBuilder()
       .setName('rank')
       .setDescription('Send a rank request to the matching relay')
@@ -111,7 +122,7 @@ const commandDefinitions = [
           .setRequired(false),
       ),
     false,
-  ),
+  )),
 ];
 
 function getMemberNickname(interaction) {
@@ -265,6 +276,7 @@ function isValidSteamId64(steamId) {
 
 function buildRelayRequest(interaction) {
   const commandName = interaction.commandName;
+  const hidden = interaction.options.getBoolean('hidden') || false;
 
   if (commandName === 'info') {
     const difficulty = interaction.options.getString('difficulty', true);
@@ -276,6 +288,7 @@ function buildRelayRequest(interaction) {
     return {
       difficulty,
       payload: '/dsrequest info',
+      hidden,
     };
   }
 
@@ -306,14 +319,15 @@ function buildRelayRequest(interaction) {
       payload: nickname
         ? `/dsrequest vipinfo nickname:${nickname.trim()}`
         : `/dsrequest vipinfo steamid:${steamId.trim()}`,
+      hidden,
     };
   }
 
   if (commandName === 'perk') {
-    const difficulty = interaction.options.getString('difficulty', true);
+    const relay = getDefaultRelay();
 
-    if (!ensureValidDifficulty(difficulty)) {
-      throw new Error('Selected difficulty is not active right now.');
+    if (!relay) {
+      throw new Error('No active difficulties are available right now.');
     }
 
     const nickname = interaction.options.getString('nickname');
@@ -332,10 +346,11 @@ function buildRelayRequest(interaction) {
     }
 
     return {
-      difficulty,
+      difficulty: relay.difficulty,
       payload: nickname
         ? `/dsrequest perk nickname:${nickname.trim()}`
         : `/dsrequest perk steamid:${steamId.trim()}`,
+      hidden,
     };
   }
 
@@ -360,6 +375,7 @@ function buildRelayRequest(interaction) {
     return {
       difficulty: selectedDifficulty,
       payload: '/dsrequest rank',
+      hidden,
     };
   }
 
@@ -374,6 +390,7 @@ function buildRelayRequest(interaction) {
     payload: nickname
       ? `/dsrequest rank nickname:${nickname.trim()}`
       : `/dsrequest rank steamid:${steamId.trim()}`,
+    hidden,
   };
 }
 
@@ -483,10 +500,16 @@ async function processRelayQueue(difficulty) {
         }
 
         const responsePayload = await sendPayloadToRelay(relay, job.request.payload);
-        await job.interaction.channel.send(responsePayload);
-        await job.interaction.editReply({
-          content: `Sent to relay "${difficulty}" and posted the response.`,
-        });
+        if (job.request.hidden) {
+          await job.interaction.editReply({
+            content: responsePayload,
+          });
+        } else {
+          await job.interaction.channel.send(responsePayload);
+          await job.interaction.editReply({
+            content: `Sent to relay "${difficulty}" and posted the response.`,
+          });
+        }
       } catch (error) {
         console.error(`Failed to process command: ${error.message || error}`);
         await job.interaction.editReply({
