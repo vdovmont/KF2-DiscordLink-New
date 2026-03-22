@@ -457,13 +457,19 @@ function extractRelayResponseText(responsePayload) {
   return responsePayload.replace(/^\/dsresponse\s*/i, '').trim();
 }
 
-function parsePerkEntries(responsePayload) {
+function parseRelayJsonPayload(responsePayload) {
   const responseText = extractRelayResponseText(responsePayload);
 
-  let parsedPayload;
   try {
-    parsedPayload = JSON.parse(responseText);
+    return JSON.parse(responseText);
   } catch (error) {
+    return null;
+  }
+}
+
+function parsePerkEntries(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload) {
     return [];
   }
 
@@ -499,12 +505,8 @@ function parsePerkEntries(responsePayload) {
 }
 
 function parseVipInfo(responsePayload) {
-  const responseText = extractRelayResponseText(responsePayload);
-
-  let parsedPayload;
-  try {
-    parsedPayload = JSON.parse(responseText);
-  } catch (error) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload) {
     return null;
   }
 
@@ -589,6 +591,11 @@ function formatVipInfoResponse(request, responsePayload) {
 }
 
 function formatResponse(interaction, request, responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
+    return parsedPayload.error.trim();
+  }
+
   if (request.commandName === 'perk') {
     return formatPerkResponse(interaction, request, responsePayload);
   }
