@@ -167,6 +167,19 @@ const commandDefinitions = [
       )
       .addStringOption((option) =>
         option
+          .setName('difficulty')
+          .setDescription('Difficulty to mimic for commands like /rank or /info')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Normal', value: 'normal' },
+            { name: 'Hard', value: 'hard' },
+            { name: 'Suicidal', value: 'suicidal' },
+            { name: 'HoE', value: 'hoe' },
+            { name: 'Extreme', value: 'extreme' },
+          ),
+      )
+      .addStringOption((option) =>
+        option
           .setName('target')
           .setDescription('Player label to show in formatted examples like /perk')
           .setRequired(false),
@@ -566,6 +579,41 @@ function parseRankEntries(responsePayload) {
   return entries;
 }
 
+function parseRankings(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload || !Array.isArray(parsedPayload.rankings)) {
+    return [];
+  }
+
+  const entries = [];
+
+  for (const ranking of parsedPayload.rankings) {
+    if (!ranking || typeof ranking.playerName !== 'string') {
+      continue;
+    }
+
+    const rank = Number.parseInt(ranking.rank, 10);
+    const points = Number.parseInt(ranking.points, 10);
+    const playerName = ranking.playerName.trim();
+
+    if (!playerName || Number.isNaN(rank) || Number.isNaN(points)) {
+      continue;
+    }
+
+    entries.push({
+      rank,
+      playerName,
+      points,
+    });
+  }
+
+  return entries;
+}
+
+function getDifficultyLabel(difficultyKey) {
+  return RANK_DISPLAY_ORDER.find((difficulty) => difficulty.key === difficultyKey)?.label || difficultyKey;
+}
+
 function resolveGuildEmoji(interaction, emojiName) {
   const emoji = interaction.guild?.emojis?.cache?.find((guildEmoji) => guildEmoji.name === emojiName);
   return emoji ? emoji.toString() : `:${emojiName}:`;
@@ -632,6 +680,34 @@ function formatVipInfoResponse(request, responsePayload) {
 function formatRankResponse(request, responsePayload) {
   if (request.commandName !== 'rank') {
     return responsePayload;
+  }
+
+  const rankings = parseRankings(responsePayload);
+  if (rankings.length > 0) {
+    const difficultyLabel = getDifficultyLabel(request.difficulty || 'server');
+    const longestPlayerNameLength = Math.max(
+      1,
+      ...rankings.map((entry) => entry.playerName.length),
+    );
+    const longestRankLength = Math.max(
+      1,
+      ...rankings.map((entry) => String(entry.rank).length),
+    );
+    const longestPointsLength = Math.max(
+      1,
+      ...rankings.map((entry) => String(entry.points).length),
+    );
+
+    const lines = [`Ranking of ${difficultyLabel} server:`];
+
+    for (const entry of rankings) {
+      const paddedPlayerName = entry.playerName.padEnd(longestPlayerNameLength, ' ');
+      const paddedRank = String(entry.rank).padStart(longestRankLength, ' ');
+      const paddedPoints = String(entry.points).padStart(longestPointsLength, ' ');
+      lines.push(`\`${paddedPlayerName}: ${paddedRank} with ${paddedPoints} points\``);
+    }
+
+    return lines.join('\n');
   }
 
   const rankEntries = parseRankEntries(responsePayload);
@@ -861,6 +937,7 @@ async function enqueueRelayRequest(interaction, request) {
 
 async function handleExampleCommand(interaction) {
   const commandName = interaction.options.getString('command', true);
+  const difficulty = interaction.options.getString('difficulty');
   const requestedTarget = interaction.options.getString('target')?.trim();
   const responsePayload = interaction.options.getString('response', true).trim();
   const hidden = interaction.options.getBoolean('hidden') || false;
@@ -873,6 +950,7 @@ async function handleExampleCommand(interaction) {
     interaction,
     {
       commandName,
+      difficulty,
       requestedTarget,
       hidden,
     },
