@@ -610,13 +610,29 @@ function parseRankings(responsePayload) {
   return entries;
 }
 
+function parseInfoResponse(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload || typeof parsedPayload.info !== 'object' || parsedPayload.info === null) {
+    return null;
+  }
+
+  return parsedPayload.info;
+}
+
 function getDifficultyLabel(difficultyKey) {
   return RANK_DISPLAY_ORDER.find((difficulty) => difficulty.key === difficultyKey)?.label || difficultyKey;
 }
 
+function resolveCustomEmoji(interaction, emojiName, fallbackText) {
+  const normalizedEmojiName = typeof emojiName === 'string' ? emojiName.trim().toLowerCase() : '';
+  const emoji = interaction.guild?.emojis?.cache?.find(
+    (guildEmoji) => typeof guildEmoji.name === 'string' && guildEmoji.name.toLowerCase() === normalizedEmojiName,
+  );
+  return emoji ? emoji.toString() : fallbackText;
+}
+
 function resolveGuildEmoji(interaction, emojiName) {
-  const emoji = interaction.guild?.emojis?.cache?.find((guildEmoji) => guildEmoji.name === emojiName);
-  return emoji ? emoji.toString() : `:${emojiName}:`;
+  return resolveCustomEmoji(interaction, emojiName, `:${emojiName}:`);
 }
 
 function formatPerkResponse(interaction, request, responsePayload) {
@@ -675,6 +691,178 @@ function formatVipInfoResponse(request, responsePayload) {
 
   const dayLabel = vipInfo.daysLeft === 1 ? 'day' : 'days';
   return `You have ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
+}
+
+function formatWaveTypeLabel(waveType) {
+  if (!waveType) {
+    return '';
+  }
+
+  const normalizedType = waveType.trim().toLowerCase();
+  if (normalizedType === 'normal') {
+    return 'Normal';
+  }
+  if (normalizedType === 'special') {
+    return 'Special';
+  }
+  if (normalizedType === 'boss') {
+    return 'Boss';
+  }
+
+  return waveType.trim();
+}
+
+function normalizeCountryCode(countryCode) {
+  if (typeof countryCode !== 'string') {
+    return '';
+  }
+
+  const normalizedCode = countryCode.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalizedCode)) {
+    return '';
+  }
+
+  return normalizedCode;
+}
+
+function countryCodeToFlagEmoji(countryCode) {
+  const normalizedCode = normalizeCountryCode(countryCode);
+  if (!normalizedCode) {
+    return '🏳️';
+  }
+
+  return String.fromCodePoint(
+    ...normalizedCode.split('').map((character) => 127397 + character.charCodeAt(0)),
+  );
+}
+
+function formatInfoResponse(interaction, request, responsePayload) {
+  if (request.commandName !== 'info') {
+    return responsePayload;
+  }
+
+  const info = parseInfoResponse(responsePayload);
+  if (!info) {
+    return responsePayload;
+  }
+
+  const difficultyLabel = getDifficultyLabel(request.difficulty || 'server');
+  const lines = [`Info of ${difficultyLabel} server:`];
+
+  if (typeof info.mapName === 'string' && info.mapName.trim() !== '') {
+    lines.push(`Map: ${info.mapName.trim()}`);
+  }
+
+  const currentWave = Number.parseInt(info.currentWave, 10);
+  const maxWaves = Number.parseInt(info.maxWaves, 10);
+  const waveType = typeof info.wave?.type === 'string' ? formatWaveTypeLabel(info.wave.type) : '';
+  const waveName = typeof info.wave?.name === 'string' ? info.wave.name.trim() : '';
+  const waveParts = [];
+
+  if (!Number.isNaN(currentWave) && !Number.isNaN(maxWaves)) {
+    waveParts.push(`${currentWave}/${maxWaves}`);
+  }
+  if (waveType) {
+    waveParts.push(waveType);
+  }
+  if (waveName) {
+    waveParts.push(waveName);
+  }
+  if (waveParts.length > 0) {
+    lines.push(`Wave: ${waveParts.join(' | ')}`);
+  }
+
+  const zedsLeft = Number.parseInt(info.zedsLeft, 10);
+  const teamValue = Number.parseInt(info.teamValue, 10);
+  const timeText = typeof info.time === 'string' ? info.time.trim() : '';
+  const combatParts = [];
+
+  if (!Number.isNaN(zedsLeft)) {
+    combatParts.push(`Zeds left: ${zedsLeft}`);
+  }
+  if (timeText) {
+    combatParts.push(`Time: ${timeText}`);
+  }
+  if (!Number.isNaN(teamValue)) {
+    combatParts.push(`Team value: ${teamValue}`);
+  }
+  if (combatParts.length > 0) {
+    lines.push(combatParts.join(' | '));
+  }
+
+  const playersAlive = Number.parseInt(info.playersAlive, 10);
+  const playersDead = Number.parseInt(info.playersDead, 10);
+  const playerCountParts = [];
+
+  if (!Number.isNaN(playersAlive)) {
+    playerCountParts.push(`${playersAlive} alive`);
+  }
+  if (!Number.isNaN(playersDead)) {
+    playerCountParts.push(`${playersDead} dead`);
+  }
+  if (playerCountParts.length > 0) {
+    lines.push(`Players: ${playerCountParts.join(', ')}`);
+  }
+
+  const multipliers = [
+    typeof info.zedsHpMultiplier === 'number' ? `Zed HP x${info.zedsHpMultiplier}` : null,
+    typeof info.zedsXpMultiplier === 'number' ? `Zed XP x${info.zedsXpMultiplier}` : null,
+    typeof info.dmgMultiplier === 'number' ? `Damage x${info.dmgMultiplier}` : null,
+  ].filter(Boolean);
+  if (multipliers.length > 0) {
+    lines.push(multipliers.join(' | '));
+  }
+
+  if (Array.isArray(info.players) && info.players.length > 0) {
+    lines.push('Players:');
+
+    const playerEntries = info.players
+      .filter((player) => player && typeof player.name === 'string' && player.name.trim() !== '')
+      .map((player) => ({
+        name: player.name.trim(),
+        status: typeof player.status === 'string' ? player.status.trim().toLowerCase() : 'unknown',
+        country: countryCodeToFlagEmoji(typeof player.country === 'string' ? player.country : ''),
+        prestige: Number.isNaN(Number.parseInt(player.prestige, 10)) ? 0 : Number.parseInt(player.prestige, 10),
+        level: Number.isNaN(Number.parseInt(player.level, 10)) ? 0 : Number.parseInt(player.level, 10),
+        role: typeof player.role === 'string' ? player.role.trim() : 'Unknown',
+        perk: findPerkDefinition(typeof player.role === 'string' ? player.role : ''),
+      }));
+
+    const longestNameLength = Math.max(1, ...playerEntries.map((player) => player.name.length));
+    const longestPrestigeLength = Math.max(1, ...playerEntries.map((player) => String(player.prestige).length));
+    const longestLevelLength = Math.max(1, ...playerEntries.map((player) => String(player.level).length));
+
+    for (const player of playerEntries) {
+      const emoji = player.perk ? resolveGuildEmoji(interaction, player.perk.emojiName) : `\`${player.role}\``;
+      const statusEmoji = player.status === 'dead' ? '💀' : '❤️';
+      const paddedName = player.name.padEnd(longestNameLength, ' ');
+      const paddedPrestige = String(player.prestige).padStart(longestPrestigeLength, ' ');
+      const paddedLevel = String(player.level).padStart(longestLevelLength, ' ');
+      lines.push(`${emoji} \`${paddedName} | ${statusEmoji} | ${player.country} | ${paddedPrestige}-${paddedLevel}\``);
+    }
+  }
+
+  const bossSections = [
+    {
+      label: 'On map',
+      values: Array.isArray(info.bosses?.onMap) ? info.bosses.onMap : [],
+    },
+    {
+      label: 'Waiting room',
+      values: Array.isArray(info.bosses?.waitingRoom) ? info.bosses.waitingRoom : [],
+    },
+  ];
+  lines.push('Bosses:');
+
+  const longestBossLabelLength = Math.max(...bossSections.map((section) => section.label.length));
+
+  for (const section of bossSections) {
+    const paddedLabel = section.label.padEnd(longestBossLabelLength, ' ');
+    const bossText = section.values.length > 0 ? section.values.join(', ') : 'None';
+    lines.push(`\`${paddedLabel}: ${bossText}\``);
+  }
+
+  return lines.join('\n');
 }
 
 function formatRankResponse(request, responsePayload) {
@@ -755,6 +943,10 @@ function formatResponse(interaction, request, responsePayload) {
 
   if (request.commandName === 'perk') {
     return formatPerkResponse(interaction, request, responsePayload);
+  }
+
+  if (request.commandName === 'info') {
+    return formatInfoResponse(interaction, request, responsePayload);
   }
 
   if (request.commandName === 'vipinfo') {
