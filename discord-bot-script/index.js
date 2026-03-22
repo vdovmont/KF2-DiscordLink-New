@@ -519,6 +519,14 @@ function formatPerkResponse(interaction, request, responsePayload) {
     (maxLength, perk) => Math.max(maxLength, perk.label.length),
     0,
   );
+  const longestPrestigeLength = Math.max(
+    1,
+    ...perkEntries.map((entry) => String(entry.prestige).length),
+  );
+  const longestLevelLength = Math.max(
+    1,
+    ...perkEntries.map((entry) => String(entry.level).length),
+  );
 
   for (const perk of PERK_DISPLAY_ORDER) {
     const entry = entriesByKey.get(perk.key);
@@ -527,7 +535,9 @@ function formatPerkResponse(interaction, request, responsePayload) {
     }
 
     const paddedLabel = perk.label.padEnd(longestLabelLength, ' ');
-    lines.push(`${resolveGuildEmoji(interaction, perk.emojiName)} ${paddedLabel}: ${entry.prestige}-${entry.level}`);
+    const paddedPrestige = String(entry.prestige).padStart(longestPrestigeLength, ' ');
+    const paddedLevel = String(entry.level).padStart(longestLevelLength, ' ');
+    lines.push(`${resolveGuildEmoji(interaction, perk.emojiName)} \`${paddedLabel}: ${paddedPrestige}-${paddedLevel}\``);
   }
 
   return lines.join('\n');
