@@ -39,6 +39,13 @@ const {
 const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'rank', 'example'];
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
+const RANK_DISPLAY_ORDER = [
+  { key: 'normal', label: 'Normal' },
+  { key: 'hard', label: 'Hard' },
+  { key: 'suicidal', label: 'Suicidal' },
+  { key: 'hoe', label: 'HoE' },
+  { key: 'extreme', label: 'Extreme' },
+];
 const PERK_DISPLAY_ORDER = [
   { key: 'berserker', label: 'Berserker', emojiName: 'KFZerker', aliases: ['berserker'] },
   { key: 'commando', label: 'Commando', emojiName: 'KFMando', aliases: ['commando'] },
@@ -527,6 +534,38 @@ function parseVipInfo(responsePayload) {
   };
 }
 
+function parseRankEntries(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload || typeof parsedPayload.ranks !== 'object' || parsedPayload.ranks === null) {
+    return [];
+  }
+
+  const entries = [];
+
+  for (const difficulty of RANK_DISPLAY_ORDER) {
+    const rankData = parsedPayload.ranks[difficulty.key];
+    if (!rankData || typeof rankData !== 'object') {
+      continue;
+    }
+
+    const rank = Number.parseInt(rankData.rank, 10);
+    const points = Number.parseInt(rankData.points, 10);
+
+    if (Number.isNaN(rank) || Number.isNaN(points)) {
+      continue;
+    }
+
+    entries.push({
+      key: difficulty.key,
+      label: difficulty.label,
+      rank,
+      points,
+    });
+  }
+
+  return entries;
+}
+
 function resolveGuildEmoji(interaction, emojiName) {
   const emoji = interaction.guild?.emojis?.cache?.find((guildEmoji) => guildEmoji.name === emojiName);
   return emoji ? emoji.toString() : `:${emojiName}:`;
@@ -590,6 +629,48 @@ function formatVipInfoResponse(request, responsePayload) {
   return `You have ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
 }
 
+function formatRankResponse(request, responsePayload) {
+  if (request.commandName !== 'rank') {
+    return responsePayload;
+  }
+
+  const rankEntries = parseRankEntries(responsePayload);
+  if (rankEntries.length === 0) {
+    return responsePayload;
+  }
+
+  const longestLabelLength = RANK_DISPLAY_ORDER.reduce(
+    (maxLength, difficulty) => Math.max(maxLength, difficulty.label.length),
+    0,
+  );
+  const longestRankLength = Math.max(
+    1,
+    ...rankEntries.map((entry) => String(entry.rank).length),
+  );
+  const longestPointsLength = Math.max(
+    1,
+    ...rankEntries.map((entry) => String(entry.points).length),
+  );
+  const projectedVipDays = rankEntries.reduce(
+    (totalDays, entry) => totalDays + Math.max(11 - entry.rank, 0),
+    0,
+  );
+
+  const lines = rankEntries.map((entry) => {
+    const paddedLabel = entry.label.padEnd(longestLabelLength, ' ');
+    const paddedRank = String(entry.rank).padStart(longestRankLength, ' ');
+    const paddedPoints = String(entry.points).padStart(longestPointsLength, ' ');
+    return `\`${paddedLabel}: Rank ${paddedRank} with ${paddedPoints} points\``;
+  });
+
+  if (projectedVipDays > 0) {
+    const dayLabel = projectedVipDays === 1 ? 'day' : 'days';
+    lines.push(`Based on your current rank, at the end of the month you can recieve ${projectedVipDays} VIP ${dayLabel}!`);
+  }
+
+  return lines.join('\n');
+}
+
 function formatResponse(interaction, request, responsePayload) {
   const parsedPayload = parseRelayJsonPayload(responsePayload);
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
@@ -602,6 +683,10 @@ function formatResponse(interaction, request, responsePayload) {
 
   if (request.commandName === 'vipinfo') {
     return formatVipInfoResponse(request, responsePayload);
+  }
+
+  if (request.commandName === 'rank') {
+    return formatRankResponse(request, responsePayload);
   }
 
   return responsePayload;
