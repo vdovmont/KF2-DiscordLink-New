@@ -72,15 +72,44 @@ const commandDefinitions = [
     option
       .setName('nickname')
       .setDescription('Discord nickname or Steam nickname')
-      .setRequired(true),
+      .setRequired(false),
+  ).addStringOption((option) =>
+    option
+      .setName('steamid')
+      .setDescription('Steam ID64')
+      .setRequired(false),
   ),
   new SlashCommandBuilder()
     .setName('vipinfo')
-    .setDescription('Send a VIP info request to the first active relay'),
+    .setDescription('Send a VIP info request to the first active relay')
+    .addStringOption((option) =>
+      option
+        .setName('nickname')
+        .setDescription('Discord nickname or Steam nickname')
+        .setRequired(false),
+    )
+    .addStringOption((option) =>
+      option
+        .setName('steamid')
+        .setDescription('Steam ID64')
+        .setRequired(false),
+    ),
   addDifficultyOptionWithRequired(
     new SlashCommandBuilder()
       .setName('rank')
-      .setDescription('Send a rank request to the matching relay'),
+      .setDescription('Send a rank request to the matching relay')
+      .addStringOption((option) =>
+        option
+          .setName('nickname')
+          .setDescription('Steam nickname')
+          .setRequired(false),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('steamid')
+          .setDescription('Steam ID64')
+          .setRequired(false),
+      ),
     false,
   ),
 ];
@@ -216,6 +245,24 @@ function getRelayQueue(difficulty) {
   return relayQueues.get(difficulty);
 }
 
+function isValidSteamId64(steamId) {
+  if (typeof steamId !== 'string') {
+    return false;
+  }
+
+  const trimmedSteamId = steamId.trim();
+  if (!/^\d{17}$/.test(trimmedSteamId)) {
+    return false;
+  }
+
+  try {
+    const value = BigInt(trimmedSteamId);
+    return value >= 76561197960265728n && value <= 99999999999999999n;
+  } catch (error) {
+    return false;
+  }
+}
+
 function buildRelayRequest(interaction) {
   const commandName = interaction.commandName;
 
@@ -239,9 +286,26 @@ function buildRelayRequest(interaction) {
       throw new Error('No active difficulties are available right now.');
     }
 
+    const nickname = interaction.options.getString('nickname');
+    const steamId = interaction.options.getString('steamid');
+
+    if (!nickname && !steamId) {
+      throw new Error('Provide either nickname or steamid for /vipinfo.');
+    }
+
+    if (nickname && steamId) {
+      throw new Error('Use either nickname or steamid for /vipinfo, not both.');
+    }
+
+    if (steamId && !isValidSteamId64(steamId)) {
+      throw new Error('Invalid steamid. Provide a valid SteamID64.');
+    }
+
     return {
       difficulty: relay.difficulty,
-      payload: `/dsrequest vipinfo ${getMemberNickname(interaction)}`,
+      payload: nickname
+        ? `/dsrequest vipinfo nickname:${nickname.trim()}`
+        : `/dsrequest vipinfo steamid:${steamId.trim()}`,
     };
   }
 
@@ -252,14 +316,41 @@ function buildRelayRequest(interaction) {
       throw new Error('Selected difficulty is not active right now.');
     }
 
-    const nickname = interaction.options.getString('nickname', true).trim();
+    const nickname = interaction.options.getString('nickname');
+    const steamId = interaction.options.getString('steamid');
+
+    if (!nickname && !steamId) {
+      throw new Error('Provide either nickname or steamid for /perk.');
+    }
+
+    if (nickname && steamId) {
+      throw new Error('Use either nickname or steamid for /perk, not both.');
+    }
+
+    if (steamId && !isValidSteamId64(steamId)) {
+      throw new Error('Invalid steamid. Provide a valid SteamID64.');
+    }
+
     return {
       difficulty,
-      payload: `/dsrequest perk ${nickname}`,
+      payload: nickname
+        ? `/dsrequest perk nickname:${nickname.trim()}`
+        : `/dsrequest perk steamid:${steamId.trim()}`,
     };
   }
 
   const selectedDifficulty = interaction.options.getString('difficulty');
+  const nickname = interaction.options.getString('nickname');
+  const steamId = interaction.options.getString('steamid');
+  const providedOptions = [selectedDifficulty, nickname, steamId].filter(Boolean).length;
+
+  if (providedOptions !== 1) {
+    throw new Error('Use exactly one option for /rank: difficulty, nickname, or steamid.');
+  }
+
+  if (steamId && !isValidSteamId64(steamId)) {
+    throw new Error('Invalid steamid. Provide a valid SteamID64.');
+  }
 
   if (selectedDifficulty) {
     if (!ensureValidDifficulty(selectedDifficulty)) {
@@ -280,7 +371,9 @@ function buildRelayRequest(interaction) {
 
   return {
     difficulty: relay.difficulty,
-    payload: `/dsrequest rank ${getMemberNickname(interaction)}`,
+    payload: nickname
+      ? `/dsrequest rank nickname:${nickname.trim()}`
+      : `/dsrequest rank steamid:${steamId.trim()}`,
   };
 }
 
