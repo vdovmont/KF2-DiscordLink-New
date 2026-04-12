@@ -1034,8 +1034,16 @@ function formatResponse(interaction, request, responsePayload) {
   return responsePayload;
 }
 
+function wrapFormattedResponse(request, responseText) {
+  const separator = '-----------------------------------------------';
+  return `${separator}\n${responseText}\n${separator}`;
+}
+
 async function postResponse(interaction, request, responsePayload, successMessage) {
-  const formattedResponse = formatResponse(interaction, request, responsePayload);
+  const formattedResponse = wrapFormattedResponse(
+    request,
+    formatResponse(interaction, request, responsePayload),
+  );
 
   if (request.hidden) {
     await interaction.editReply({
