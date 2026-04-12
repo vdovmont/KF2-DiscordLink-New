@@ -20,7 +20,7 @@ const HEARTBEAT_TTL_MS = Number.parseInt(process.env.HEARTBEAT_TTL_MS || '60000'
 const HEARTBEAT_REFRESH_MS = 30000;
 const RELAY_HOST = process.env.RELAY_HOST || '127.0.0.1';
 const RELAY_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.RELAY_REQUEST_TIMEOUT_MS || '60000', 10);
-const RAW_ALLOWED_ROLE_IDS = (process.env.RAW_ALLOWED_ROLE_IDS || '')
+const SPECIAL_ACCESS_ROLE_IDS = (process.env.SPECIAL_ACCESS_ROLE_IDS || '')
   .split(',')
   .map((roleId) => roleId.trim())
   .filter(Boolean);
@@ -101,7 +101,11 @@ function addDifficultyOptionWithRequired(commandBuilder, required) {
 }
 
 function canUseRawOption(interaction) {
-  if (RAW_ALLOWED_ROLE_IDS.length === 0) {
+  return hasAnyAllowedRole(interaction, SPECIAL_ACCESS_ROLE_IDS);
+}
+
+function hasAnyAllowedRole(interaction, allowedRoleIds) {
+  if (allowedRoleIds.length === 0) {
     return false;
   }
 
@@ -111,11 +115,11 @@ function canUseRawOption(interaction) {
   }
 
   if (memberRoles.cache) {
-    return RAW_ALLOWED_ROLE_IDS.some((roleId) => memberRoles.cache.has(roleId));
+    return allowedRoleIds.some((roleId) => memberRoles.cache.has(roleId));
   }
 
   if (Array.isArray(memberRoles)) {
-    return RAW_ALLOWED_ROLE_IDS.some((roleId) => memberRoles.includes(roleId));
+    return allowedRoleIds.some((roleId) => memberRoles.includes(roleId));
   }
 
   return false;
@@ -134,6 +138,16 @@ function resolveRawOption(interaction) {
   }
 
   return true;
+}
+
+function ensureExampleAccess(interaction) {
+  if (hasAnyAllowedRole(interaction, SPECIAL_ACCESS_ROLE_IDS)) {
+    return;
+  }
+
+  const error = new Error('You are not allowed to use the /example command.');
+  error.suppressConsoleLog = true;
+  throw error;
 }
 
 const commandDefinitions = [
@@ -1181,6 +1195,8 @@ async function enqueueRelayRequest(interaction, request) {
 }
 
 async function handleExampleCommand(interaction) {
+  ensureExampleAccess(interaction);
+
   const commandName = interaction.options.getString('command', true);
   const difficulty = interaction.options.getString('difficulty');
   const requestedTarget = interaction.options.getString('target')?.trim();
