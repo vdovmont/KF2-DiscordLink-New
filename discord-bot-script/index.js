@@ -796,8 +796,6 @@ function formatInfoResponse(interaction, request, responsePayload) {
   }
 
   if (Array.isArray(info.players) && info.players.length > 0) {
-    lines.push('Players:');
-
     const playerEntries = info.players
       .filter((player) => player && typeof player.name === 'string' && player.name.trim() !== '')
       .map((player) => ({
@@ -810,38 +808,52 @@ function formatInfoResponse(interaction, request, responsePayload) {
         perk: findPerkDefinition(typeof player.role === 'string' ? player.role : ''),
       }));
 
+    if (playerEntries.length > 0) {
+      lines.push('Players:');
+    }
+
     const longestNameLength = Math.max(1, ...playerEntries.map((player) => player.name.length));
     const longestPrestigeLength = Math.max(1, ...playerEntries.map((player) => String(player.prestige).length));
     const longestLevelLength = Math.max(1, ...playerEntries.map((player) => String(player.level).length));
 
     for (const player of playerEntries) {
-      const emoji = player.perk ? resolveGuildEmoji(interaction, player.perk.emojiName) : `\`${player.role}\``;
+      const prefix = player.perk
+        ? resolveGuildEmoji(interaction, player.perk.emojiName)
+        : `\`${player.role}\``;
       const statusEmoji = player.status === 'dead' ? '💀' : '❤️';
-      const paddedName = player.name.padEnd(longestNameLength, ' ');
+      const rowParts = [player.name.padEnd(longestNameLength, ' '), statusEmoji, player.country];
       const paddedPrestige = String(player.prestige).padStart(longestPrestigeLength, ' ');
       const paddedLevel = String(player.level).padStart(longestLevelLength, ' ');
-      lines.push(`${emoji} \`${paddedName} | ${statusEmoji} | ${player.country} | ${paddedPrestige}-${paddedLevel}\``);
+      rowParts.push(`${paddedPrestige}-${paddedLevel}`);
+
+      lines.push(`${prefix ? `${prefix} ` : ''}\`${rowParts.join(' | ')}\``);
     }
   }
 
-  const bossSections = [
-    {
+  const bossSections = [];
+  if (Array.isArray(info.bosses?.onMap)) {
+    bossSections.push({
       label: 'On map',
-      values: Array.isArray(info.bosses?.onMap) ? info.bosses.onMap : [],
-    },
-    {
+      values: info.bosses.onMap,
+    });
+  }
+  if (Array.isArray(info.bosses?.waitingRoom)) {
+    bossSections.push({
       label: 'Waiting room',
-      values: Array.isArray(info.bosses?.waitingRoom) ? info.bosses.waitingRoom : [],
-    },
-  ];
-  lines.push('Bosses:');
+      values: info.bosses.waitingRoom,
+    });
+  }
 
-  const longestBossLabelLength = Math.max(...bossSections.map((section) => section.label.length));
+  if (bossSections.length > 0) {
+    lines.push('Bosses:');
 
-  for (const section of bossSections) {
-    const paddedLabel = section.label.padEnd(longestBossLabelLength, ' ');
-    const bossText = section.values.length > 0 ? section.values.join(', ') : 'None';
-    lines.push(`\`${paddedLabel}: ${bossText}\``);
+    const longestBossLabelLength = Math.max(...bossSections.map((section) => section.label.length));
+
+    for (const section of bossSections) {
+      const paddedLabel = section.label.padEnd(longestBossLabelLength, ' ');
+      const bossText = section.values.length > 0 ? section.values.join(', ') : 'None';
+      lines.push(`\`${paddedLabel}: ${bossText}\``);
+    }
   }
 
   return lines.join('\n');
