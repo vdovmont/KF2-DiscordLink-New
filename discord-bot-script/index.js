@@ -543,7 +543,14 @@ function findPerkDefinition(value) {
 }
 
 function extractRelayResponseText(responsePayload) {
-  return responsePayload.replace(/^\/dsresponse\s*/i, '').trim();
+  const responseText = responsePayload.replace(/^\/dsresponse\s*/i, '').trim();
+  const jsonStartIndex = responseText.search(/[\[{]/);
+
+  if (jsonStartIndex > 0) {
+    return responseText.slice(jsonStartIndex).trim();
+  }
+
+  return responseText;
 }
 
 function parseRelayJsonPayload(responsePayload) {
