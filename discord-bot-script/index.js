@@ -750,7 +750,14 @@ function formatInfoResponse(interaction, request, responsePayload) {
   const lines = [`Info of ${difficultyLabel} server:`];
 
   if (typeof info.mapName === 'string' && info.mapName.trim() !== '') {
-    lines.push(`Map: ${info.mapName.trim()}`);
+    const mapParts = [`Map: ${info.mapName.trim()}`];
+    const mapXp = Number.parseInt(info.mapXP, 10);
+
+    if (!Number.isNaN(mapXp)) {
+      mapParts.push(`+${mapXp}% XP`);
+    }
+
+    lines.push(mapParts.join(' | '));
   }
 
   const currentWave = Number.parseInt(info.currentWave, 10);
