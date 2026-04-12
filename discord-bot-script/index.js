@@ -806,7 +806,6 @@ function formatInfoResponse(interaction, request, responsePayload) {
 
   const multipliers = [
     typeof info.zedsHpMultiplier === 'number' ? `Zed HP x${info.zedsHpMultiplier}` : null,
-    typeof info.zedsXpMultiplier === 'number' ? `Zed XP x${info.zedsXpMultiplier}` : null,
     typeof info.dmgMultiplier === 'number' ? `Damage x${info.dmgMultiplier}` : null,
   ].filter(Boolean);
   if (multipliers.length > 0) {
