@@ -712,30 +712,6 @@ function formatWaveTypeLabel(waveType) {
   return waveType.trim();
 }
 
-function normalizeCountryCode(countryCode) {
-  if (typeof countryCode !== 'string') {
-    return '';
-  }
-
-  const normalizedCode = countryCode.trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(normalizedCode)) {
-    return '';
-  }
-
-  return normalizedCode;
-}
-
-function countryCodeToFlagEmoji(countryCode) {
-  const normalizedCode = normalizeCountryCode(countryCode);
-  if (!normalizedCode) {
-    return '🏳️';
-  }
-
-  return String.fromCodePoint(
-    ...normalizedCode.split('').map((character) => 127397 + character.charCodeAt(0)),
-  );
-}
-
 function formatInfoResponse(interaction, request, responsePayload) {
   if (request.commandName !== 'info') {
     return responsePayload;
@@ -827,7 +803,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
       .map((player) => ({
         name: player.name.trim(),
         status: typeof player.status === 'string' ? player.status.trim().toLowerCase() : 'unknown',
-        country: countryCodeToFlagEmoji(typeof player.country === 'string' ? player.country : ''),
+        country: typeof player.country === 'string' && player.country.trim() ? player.country.trim() : '--',
         prestige: Number.isNaN(Number.parseInt(player.prestige, 10)) ? 0 : Number.parseInt(player.prestige, 10),
         level: Number.isNaN(Number.parseInt(player.level, 10)) ? 0 : Number.parseInt(player.level, 10),
         role: typeof player.role === 'string' ? player.role.trim() : 'Unknown',
