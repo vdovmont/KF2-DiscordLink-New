@@ -20,6 +20,10 @@ const HEARTBEAT_TTL_MS = Number.parseInt(process.env.HEARTBEAT_TTL_MS || '60000'
 const HEARTBEAT_REFRESH_MS = 30000;
 const RELAY_HOST = process.env.RELAY_HOST || '127.0.0.1';
 const RELAY_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.RELAY_REQUEST_TIMEOUT_MS || '60000', 10);
+const RAW_ALLOWED_ROLE_IDS = (process.env.RAW_ALLOWED_ROLE_IDS || '')
+  .split(',')
+  .map((roleId) => roleId.trim())
+  .filter(Boolean);
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in .env');
@@ -77,6 +81,15 @@ function addHiddenOption(commandBuilder) {
   );
 }
 
+function addRawOption(commandBuilder) {
+  return commandBuilder.addBooleanOption((option) =>
+    option
+      .setName('raw')
+      .setDescription('Post the raw relay response without formatting (restricted by role)')
+      .setRequired(false),
+  );
+}
+
 function addDifficultyOptionWithRequired(commandBuilder, required) {
   return commandBuilder.addStringOption((option) =>
     option
@@ -87,13 +100,49 @@ function addDifficultyOptionWithRequired(commandBuilder, required) {
   );
 }
 
+function canUseRawOption(interaction) {
+  if (RAW_ALLOWED_ROLE_IDS.length === 0) {
+    return false;
+  }
+
+  const memberRoles = interaction.member?.roles;
+  if (!memberRoles) {
+    return false;
+  }
+
+  if (memberRoles.cache) {
+    return RAW_ALLOWED_ROLE_IDS.some((roleId) => memberRoles.cache.has(roleId));
+  }
+
+  if (Array.isArray(memberRoles)) {
+    return RAW_ALLOWED_ROLE_IDS.some((roleId) => memberRoles.includes(roleId));
+  }
+
+  return false;
+}
+
+function resolveRawOption(interaction) {
+  const rawRequested = interaction.options.getBoolean('raw') || false;
+  if (!rawRequested) {
+    return false;
+  }
+
+  if (!canUseRawOption(interaction)) {
+    const error = new Error('You are not allowed to use the raw response option.');
+    error.suppressConsoleLog = true;
+    throw error;
+  }
+
+  return true;
+}
+
 const commandDefinitions = [
-  addHiddenOption(addDifficultyOption(
+  addRawOption(addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
       .setName('info')
       .setDescription('Send a server info request to the matching relay'),
-  )),
-  addHiddenOption(
+  ))),
+  addRawOption(addHiddenOption(
     new SlashCommandBuilder()
       .setName('perk')
       .setDescription('Send a perk request to the first active relay')
@@ -109,8 +158,8 @@ const commandDefinitions = [
           .setDescription('Steam ID64')
           .setRequired(false),
       ),
-  ),
-  addHiddenOption(new SlashCommandBuilder()
+  )),
+  addRawOption(addHiddenOption(new SlashCommandBuilder()
     .setName('vipinfo')
     .setDescription('Send a VIP info request to the first active relay')
     .addStringOption((option) =>
@@ -124,8 +173,8 @@ const commandDefinitions = [
         .setName('steamid')
         .setDescription('Steam ID64')
         .setRequired(false),
-    )),
-  addHiddenOption(addDifficultyOptionWithRequired(
+    ))),
+  addRawOption(addHiddenOption(addDifficultyOptionWithRequired(
     new SlashCommandBuilder()
       .setName('rank')
       .setDescription('Send a rank request to the matching relay')
@@ -142,8 +191,8 @@ const commandDefinitions = [
           .setRequired(false),
       ),
     false,
-  )),
-  addHiddenOption(
+  ))),
+  addRawOption(addHiddenOption(
     new SlashCommandBuilder()
       .setName('example')
       .setDescription('Preview a response payload without using a relay')
@@ -184,7 +233,7 @@ const commandDefinitions = [
           .setDescription('Player label to show in formatted examples like /perk')
           .setRequired(false),
       ),
-  ),
+  )),
 ];
 
 function getMemberNickname(interaction) {
@@ -339,6 +388,7 @@ function isValidSteamId64(steamId) {
 function buildRelayRequest(interaction) {
   const commandName = interaction.commandName;
   const hidden = interaction.options.getBoolean('hidden') || false;
+  const raw = resolveRawOption(interaction);
 
   if (commandName === 'info') {
     const difficulty = interaction.options.getString('difficulty', true);
@@ -352,6 +402,7 @@ function buildRelayRequest(interaction) {
       difficulty,
       payload: '/dsrequest info',
       hidden,
+      raw,
     };
   }
 
@@ -384,6 +435,7 @@ function buildRelayRequest(interaction) {
         ? `/dsrequest vipinfo nickname:${nickname.trim()}`
         : `/dsrequest vipinfo steamid:${steamId.trim()}`,
       hidden,
+      raw,
     };
   }
 
@@ -417,6 +469,7 @@ function buildRelayRequest(interaction) {
         ? `/dsrequest perk nickname:${nickname.trim()}`
         : `/dsrequest perk steamid:${steamId.trim()}`,
       hidden,
+      raw,
     };
   }
 
@@ -443,6 +496,7 @@ function buildRelayRequest(interaction) {
       difficulty: selectedDifficulty,
       payload: '/dsrequest rank',
       hidden,
+      raw,
     };
   }
 
@@ -459,6 +513,7 @@ function buildRelayRequest(interaction) {
       ? `/dsrequest rank nickname:${nickname.trim()}`
       : `/dsrequest rank steamid:${steamId.trim()}`,
     hidden,
+    raw,
   };
 }
 
@@ -930,6 +985,10 @@ function formatRankResponse(request, responsePayload) {
 }
 
 function formatResponse(interaction, request, responsePayload) {
+  if (request.raw) {
+    return responsePayload;
+  }
+
   const parsedPayload = parseRelayJsonPayload(responsePayload);
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
     return parsedPayload.error.trim();
@@ -1127,6 +1186,7 @@ async function handleExampleCommand(interaction) {
   const requestedTarget = interaction.options.getString('target')?.trim();
   const responsePayload = interaction.options.getString('response', true).trim();
   const hidden = interaction.options.getBoolean('hidden') || false;
+  const raw = resolveRawOption(interaction);
 
   if (!responsePayload) {
     throw new Error('Provide a response payload for /example.');
@@ -1139,6 +1199,7 @@ async function handleExampleCommand(interaction) {
       difficulty,
       requestedTarget,
       hidden,
+      raw,
     },
     responsePayload,
     `Posted example response for "/${commandName}".`,
@@ -1230,7 +1291,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const request = buildRelayRequest(interaction);
     await enqueueRelayRequest(interaction, request);
   } catch (error) {
-    console.error(`Failed to process command: ${error.message || error}`);
+    if (!error?.suppressConsoleLog) {
+      console.error(`Failed to process command: ${error.message || error}`);
+    }
 
     const response = {
       content: error.message || 'Failed to process the request.',
