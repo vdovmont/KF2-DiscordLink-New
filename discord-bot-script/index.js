@@ -1,5 +1,8 @@
+let dotenv = null;
+
 try {
-  require('dotenv').config();
+  dotenv = require('dotenv');
+  dotenv.config();
 } catch (error) {
   if (error.code !== 'MODULE_NOT_FOUND') {
     throw error;
@@ -10,16 +13,17 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 
+const ENV_FILE_PATH = path.resolve(__dirname, '.env');
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
-const HEARTBEAT_DIR = process.env.HEARTBEAT_DIR
-  ? path.resolve(process.env.HEARTBEAT_DIR)
-  : path.resolve(__dirname, '..', 'heartbeat');
-const HEARTBEAT_TTL_MS = Number.parseInt(process.env.HEARTBEAT_TTL_MS || '60000', 10);
-const HEARTBEAT_REFRESH_MS = 30000;
-const RELAY_HOST = process.env.RELAY_HOST || '127.0.0.1';
-const RELAY_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.RELAY_REQUEST_TIMEOUT_MS || '60000', 10);
+const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
+const CDA_AVATAR_URL = process.env.CDA_AVATAR_URL || '';
+const KF2_SERVER_COUNT = 5;
+const KF2_RECONNECT_DELAY_MS = Number.parseInt(process.env.KF2_RECONNECT_DELAY_MS || '30000', 10);
+const KF2_CONNECT_TIMEOUT_MS = Number.parseInt(process.env.KF2_CONNECT_TIMEOUT_MS || '5000', 10);
+const KF2_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.KF2_REQUEST_TIMEOUT_MS || '60000', 10);
 const SPECIAL_ACCESS_ROLE_IDS = (process.env.SPECIAL_ACCESS_ROLE_IDS || '')
   .split(',')
   .map((roleId) => roleId.trim())
@@ -67,6 +71,194 @@ let activeRelayMap = new Map();
 let activeDifficulties = [];
 const relayQueues = new Map();
 const processingDifficulties = new Set();
+const kf2Connections = [];
+let envReloadTimer = null;
+
+function parseBoolean(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function readServerConfig(index, env = process.env) {
+  const prefix = `KF2_SERVER_${index}_`;
+  const enabled = parseBoolean(env[`${prefix}ENABLED`], false);
+  const port = Number.parseInt(env[`${prefix}PORT`] || '', 10);
+  const difficulty = (env[`${prefix}DIFFICULTY`] || '').trim();
+  const name = (env[`${prefix}NAME`] || difficulty || `server-${index}`).trim();
+
+  if (!enabled) {
+    return null;
+  }
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${prefix}PORT must be a valid TCP port when ${prefix}ENABLED=true.`);
+  }
+
+  if (!difficulty) {
+    throw new Error(`${prefix}DIFFICULTY is required when ${prefix}ENABLED=true.`);
+  }
+
+  return {
+    index,
+    name,
+    difficulty,
+    host: env[`${prefix}HOST`] || '127.0.0.1',
+    port,
+    channelId: (env[`${prefix}DISCORD_CHANNEL_ID`] || '').trim(),
+    webhookUrl: (env[`${prefix}WEBHOOK_URL`] || '').trim(),
+    forwardKf2ToDiscord: parseBoolean(env[`${prefix}FORWARD_KF2_TO_DISCORD`], true),
+    forwardDiscordToKf2: parseBoolean(env[`${prefix}FORWARD_DISCORD_TO_KF2`], true),
+    commandsEnabled: parseBoolean(env[`${prefix}COMMANDS_ENABLED`], true),
+  };
+}
+
+function loadServerConfigs(env = process.env) {
+  const configs = [];
+
+  for (let index = 1; index <= KF2_SERVER_COUNT; index += 1) {
+    const config = readServerConfig(index, env);
+    if (config) {
+      configs.push(config);
+    }
+  }
+
+  const duplicateDifficulty = configs.find((config, index) =>
+    configs.some((otherConfig, otherIndex) =>
+      otherIndex !== index && otherConfig.difficulty === config.difficulty,
+    ),
+  );
+  if (duplicateDifficulty) {
+    throw new Error(`Duplicate KF2 difficulty "${duplicateDifficulty.difficulty}". Each enabled server needs a unique difficulty.`);
+  }
+
+  return configs;
+}
+
+function removeConnection(connection) {
+  const connectionIndex = kf2Connections.indexOf(connection);
+  if (connectionIndex !== -1) {
+    kf2Connections.splice(connectionIndex, 1);
+  }
+
+  connection.stop();
+}
+
+function requiresSocketRestart(currentConfig, nextConfig) {
+  return currentConfig.host !== nextConfig.host
+    || currentConfig.port !== nextConfig.port;
+}
+
+function applyServerConfigs(serverConfigs) {
+  const nextConfigByIndex = new Map(serverConfigs.map((config) => [config.index, config]));
+
+  for (const connection of [...kf2Connections]) {
+    const nextConfig = nextConfigByIndex.get(connection.config.index);
+
+    if (!nextConfig) {
+      console.log(`Disabling KF2 server "${connection.config.name}".`);
+      removeConnection(connection);
+      continue;
+    }
+
+    if (requiresSocketRestart(connection.config, nextConfig)) {
+      console.log(`Restarting KF2 server "${nextConfig.name}" connection because host or port changed.`);
+      removeConnection(connection);
+
+      const nextConnection = new Kf2Connection(nextConfig);
+      kf2Connections.push(nextConnection);
+      nextConnection.start();
+      continue;
+    }
+
+    connection.config = nextConfig;
+    console.log(
+      `Updated KF2 server "${nextConfig.name}" settings; `
+      + `KF2->Discord=${nextConfig.forwardKf2ToDiscord ? 'on' : 'off'}, `
+      + `Discord->KF2=${nextConfig.forwardDiscordToKf2 ? 'on' : 'off'}, `
+      + `commands=${nextConfig.commandsEnabled ? 'on' : 'off'}`,
+    );
+  }
+
+  const existingIndexes = new Set(kf2Connections.map((connection) => connection.config.index));
+
+  for (const config of serverConfigs) {
+    if (existingIndexes.has(config.index)) {
+      continue;
+    }
+
+    const connection = new Kf2Connection(config);
+    kf2Connections.push(connection);
+    connection.start();
+
+    console.log(
+      `Configured KF2 server "${config.name}" (${config.difficulty}) at ${config.host}:${config.port}; `
+      + `KF2->Discord=${config.forwardKf2ToDiscord ? 'on' : 'off'}, `
+      + `Discord->KF2=${config.forwardDiscordToKf2 ? 'on' : 'off'}, `
+      + `commands=${config.commandsEnabled ? 'on' : 'off'}`,
+    );
+  }
+
+  refreshActiveRelays();
+}
+
+function readEnvFileForServerConfigs() {
+  if (!dotenv) {
+    throw new Error('dotenv is required for live .env reloads.');
+  }
+
+  const rawEnv = fs.readFileSync(ENV_FILE_PATH, 'utf8');
+  const parsedEnv = dotenv.parse(rawEnv);
+  const configEnv = { ...process.env };
+
+  for (const key of Object.keys(configEnv)) {
+    if (/^KF2_SERVER_\d+_/.test(key)) {
+      delete configEnv[key];
+    }
+  }
+
+  return {
+    ...configEnv,
+    ...parsedEnv,
+  };
+}
+
+function reloadServerConfigsFromEnvFile() {
+  try {
+    const serverConfigs = loadServerConfigs(readEnvFileForServerConfigs());
+    applyServerConfigs(serverConfigs);
+    console.log(`Reloaded KF2 server config from ${ENV_FILE_PATH}`);
+  } catch (error) {
+    console.error(`Failed to reload KF2 server config: ${error.message || error}`);
+  }
+}
+
+function watchEnvFileForServerConfigChanges() {
+  if (!fs.existsSync(ENV_FILE_PATH)) {
+    console.warn(`Cannot watch ${ENV_FILE_PATH}; file does not exist.`);
+    return;
+  }
+
+  try {
+    fs.watch(ENV_FILE_PATH, () => {
+      if (envReloadTimer) {
+        clearTimeout(envReloadTimer);
+      }
+
+      envReloadTimer = setTimeout(() => {
+        envReloadTimer = null;
+        reloadServerConfigsFromEnvFile();
+      }, 500);
+    });
+  } catch (error) {
+    console.warn(`Cannot watch ${ENV_FILE_PATH}: ${error.message || error}`);
+    return;
+  }
+
+  console.log(`Watching ${ENV_FILE_PATH} for KF2 server config changes.`);
+}
 
 function addDifficultyOption(commandBuilder) {
   return addDifficultyOptionWithRequired(commandBuilder, true);
@@ -85,7 +277,7 @@ function addRawOption(commandBuilder) {
   return commandBuilder.addBooleanOption((option) =>
     option
       .setName('raw')
-      .setDescription('Post the raw relay response without formatting (restricted by role)')
+      .setDescription('Post the raw KF2 response without formatting (restricted by role)')
       .setRequired(false),
   );
 }
@@ -94,7 +286,7 @@ function addDifficultyOptionWithRequired(commandBuilder, required) {
   return commandBuilder.addStringOption((option) =>
     option
       .setName('difficulty')
-      .setDescription('Difficulty from active relay heartbeat files.')
+      .setDescription('Difficulty from connected KF2 servers.')
       .setRequired(required)
       .setAutocomplete(true),
   );
@@ -154,12 +346,12 @@ const commandDefinitions = [
   addRawOption(addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
       .setName('info')
-      .setDescription('Send a server info request to the matching relay'),
+      .setDescription('Send a server info request to the matching KF2 server'),
   ))),
   addRawOption(addHiddenOption(
     new SlashCommandBuilder()
       .setName('perk')
-      .setDescription('Send a perk request to the first active relay')
+      .setDescription('Send a perk request to the first connected KF2 server')
       .addStringOption((option) =>
         option
           .setName('nickname')
@@ -175,7 +367,7 @@ const commandDefinitions = [
   )),
   addRawOption(addHiddenOption(new SlashCommandBuilder()
     .setName('vipinfo')
-    .setDescription('Send a VIP info request to the first active relay')
+    .setDescription('Send a VIP info request to the first connected KF2 server')
     .addStringOption((option) =>
       option
         .setName('nickname')
@@ -191,7 +383,7 @@ const commandDefinitions = [
   addRawOption(addHiddenOption(addDifficultyOptionWithRequired(
     new SlashCommandBuilder()
       .setName('rank')
-      .setDescription('Send a rank request to the matching relay')
+      .setDescription('Send a rank request to the matching KF2 server')
       .addStringOption((option) =>
         option
           .setName('nickname')
@@ -209,7 +401,7 @@ const commandDefinitions = [
   addRawOption(addHiddenOption(
     new SlashCommandBuilder()
       .setName('example')
-      .setDescription('Preview a response payload without using a relay')
+      .setDescription('Preview a response payload without using a KF2 server')
       .addStringOption((option) =>
         option
           .setName('command')
@@ -225,7 +417,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('response')
-          .setDescription('Text to treat as the relay response payload')
+          .setDescription('Text to treat as the KF2 response payload')
           .setRequired(true),
       )
       .addStringOption((option) =>
@@ -278,65 +470,16 @@ function sortDifficulties(difficulties) {
   return [...orderedKnown, ...unknown];
 }
 
-function scanActiveRelays() {
-  if (!fs.existsSync(HEARTBEAT_DIR)) {
-    return [];
-  }
-
-  const now = Date.now();
-  const relays = [];
-
-  for (const fileName of fs.readdirSync(HEARTBEAT_DIR)) {
-    if (!fileName.toLowerCase().endsWith('.json')) {
-      continue;
-    }
-
-    const filePath = path.join(HEARTBEAT_DIR, fileName);
-
-    try {
-      const raw = fs.readFileSync(filePath, 'utf8');
-      const heartbeat = JSON.parse(raw);
-
-      if (typeof heartbeat.difficulty !== 'string' || heartbeat.difficulty.trim() === '') {
-        continue;
-      }
-
-      if (heartbeat.difficulty === '0') {
-        continue;
-      }
-
-      if (typeof heartbeat.updatedAt !== 'number') {
-        continue;
-      }
-
-      if (now - heartbeat.updatedAt > HEARTBEAT_TTL_MS) {
-        continue;
-      }
-
-      const discordBotPort = Number.isInteger(heartbeat.discordBotPort)
-        ? heartbeat.discordBotPort
-        : null;
-
-      if (!discordBotPort) {
-        continue;
-      }
-
-      relays.push({
-        difficulty: heartbeat.difficulty.trim(),
-        port: heartbeat.port,
-        discordBotPort,
-        updatedAt: heartbeat.updatedAt,
-      });
-    } catch (error) {
-      console.warn(`Skipping invalid heartbeat file: ${filePath}`, error.message);
-    }
-  }
-
-  return relays;
-}
-
 function refreshActiveRelays() {
-  const relays = scanActiveRelays();
+  const relays = kf2Connections
+    .filter((connection) => connection.config.commandsEnabled && connection.isConnected())
+    .map((connection) => ({
+      difficulty: connection.config.difficulty,
+      name: connection.config.name,
+      host: connection.config.host,
+      port: connection.config.port,
+      connection,
+    }));
   const orderedDifficulties = sortDifficulties(relays.map((relay) => relay.difficulty));
 
   activeRelayMap = new Map(
@@ -379,6 +522,311 @@ function getRelayQueue(difficulty) {
   }
 
   return relayQueues.get(difficulty);
+}
+
+function unicodeConvert(message) {
+  return message
+    .split('/')
+    .map((value) => {
+      const codePoint = Number.parseInt(value, 10);
+      if (!Number.isInteger(codePoint)) {
+        throw new Error(`Invalid character code "${value}"`);
+      }
+
+      return String.fromCharCode(codePoint);
+    })
+    .join('');
+}
+
+function parseKf2ChatPayload(message, config) {
+  const parts = message.split('^$');
+  if (parts.length < 3) {
+    throw new Error(`Unexpected KF2 payload: ${message}`);
+  }
+
+  if (parts[0] === 'CDC') {
+    return {
+      steamId: '1',
+      username: parts[1],
+      content: parts.slice(2).join('^$'),
+      avatarUrl: CDA_AVATAR_URL,
+      serverName: config.name,
+    };
+  }
+
+  return {
+    steamId: parts[0],
+    username: parts[1],
+    content: parts.slice(2).join('^$'),
+    avatarUrl: '',
+    serverName: config.name,
+  };
+}
+
+async function resolveSteamAvatarUrl(steamId, username) {
+  if (!STEAM_API_KEY || !steamId) {
+    return '';
+  }
+
+  try {
+    const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
+    url.searchParams.set('key', STEAM_API_KEY);
+    url.searchParams.set('steamids', steamId);
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data?.response?.players?.[0]?.avatar || '';
+  } catch (error) {
+    console.warn(`Could not retrieve ${username}'s avatar: ${error.message || error}`);
+    return '';
+  }
+}
+
+async function sendWebhookMessage(webhookUrl, payload) {
+  const response = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+}
+
+async function forwardKf2ChatToDiscord(config, chatMessage) {
+  if (!config.forwardKf2ToDiscord || !config.channelId) {
+    return;
+  }
+
+  const avatarUrl = chatMessage.avatarUrl || await resolveSteamAvatarUrl(chatMessage.steamId, chatMessage.username);
+
+  try {
+    if (config.webhookUrl) {
+      await sendWebhookMessage(config.webhookUrl, {
+        username: chatMessage.username,
+        avatar_url: avatarUrl || undefined,
+        content: chatMessage.content,
+      });
+      return;
+    }
+
+    const channel = await client.channels.fetch(config.channelId);
+    if (!channel || typeof channel.send !== 'function') {
+      console.warn(`Cannot find Discord channel ${config.channelId} for ${config.name}.`);
+      return;
+    }
+
+    await channel.send(`[${config.name}] ${chatMessage.username}: ${chatMessage.content}`);
+  } catch (error) {
+    console.warn(`Failed to forward KF2 chat from ${config.name} to Discord: ${error.message || error}`);
+  }
+}
+
+class Kf2Connection {
+  constructor(config) {
+    this.config = config;
+    this.socket = null;
+    this.buffer = '';
+    this.connected = false;
+    this.reconnectTimer = null;
+    this.pendingRequest = null;
+    this.manuallyStopped = false;
+  }
+
+  start() {
+    this.manuallyStopped = false;
+    this.connect();
+  }
+
+  isConnected() {
+    return this.connected && this.socket && !this.socket.destroyed;
+  }
+
+  connect() {
+    if (this.socket || this.manuallyStopped) {
+      return;
+    }
+
+    const socket = net.createConnection({
+      host: this.config.host,
+      port: this.config.port,
+    });
+
+    this.socket = socket;
+    socket.setTimeout(KF2_CONNECT_TIMEOUT_MS);
+
+    socket.once('connect', () => {
+      socket.setTimeout(0);
+      this.connected = true;
+      console.log(`Connected to KF2 server "${this.config.name}" at ${this.config.host}:${this.config.port}`);
+      refreshActiveRelays();
+    });
+
+    socket.on('data', (chunk) => {
+      this.handleData(chunk);
+    });
+
+    socket.on('timeout', () => {
+      socket.destroy(new Error('Connection timed out'));
+    });
+
+    socket.on('error', (error) => {
+      console.warn(`KF2 server "${this.config.name}" socket error: ${error.message}`);
+    });
+
+    socket.on('close', () => {
+      const wasConnected = this.connected;
+      this.socket = null;
+      this.buffer = '';
+      this.connected = false;
+      this.failPendingRequest('KF2 socket disconnected before sending a response.');
+      refreshActiveRelays();
+
+      if (wasConnected) {
+        console.warn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / 1000)} seconds...`);
+      }
+
+      this.scheduleReconnect();
+    });
+  }
+
+  scheduleReconnect() {
+    if (this.manuallyStopped || this.reconnectTimer) {
+      return;
+    }
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, KF2_RECONNECT_DELAY_MS);
+  }
+
+  handleData(chunk) {
+    this.buffer += chunk.toString('utf8');
+
+    while (true) {
+      const newlineIndex = this.buffer.indexOf('\n');
+      if (newlineIndex === -1) {
+        return;
+      }
+
+      const rawLine = this.buffer.slice(0, newlineIndex).trim();
+      this.buffer = this.buffer.slice(newlineIndex + 1);
+
+      if (rawLine) {
+        this.handleRawLine(rawLine);
+      }
+    }
+  }
+
+  handleRawLine(rawLine) {
+    let message;
+
+    try {
+      message = unicodeConvert(rawLine);
+    } catch (error) {
+      console.warn(`Failed to decode KF2 message from "${this.config.name}": ${error.message || error}`);
+      return;
+    }
+
+    if (this.tryHandleDsResponse(message)) {
+      return;
+    }
+
+    try {
+      const chatMessage = parseKf2ChatPayload(message, this.config);
+      console.log(`[${this.config.name}] ${chatMessage.username}: ${chatMessage.content}`);
+      void forwardKf2ChatToDiscord(this.config, chatMessage);
+    } catch (error) {
+      console.warn(`Failed to process KF2 message from "${this.config.name}": ${error.message || error}`);
+    }
+  }
+
+  tryHandleDsResponse(content) {
+    const prefix = '/dsresponse ';
+    if (!content.startsWith(prefix)) {
+      return false;
+    }
+
+    if (this.pendingRequest) {
+      const pendingRequest = this.pendingRequest;
+      this.pendingRequest = null;
+      clearTimeout(pendingRequest.timeout);
+      pendingRequest.resolve(content);
+    }
+
+    return true;
+  }
+
+  sendMessage(message) {
+    if (!this.isConnected()) {
+      throw new Error(`KF2 server "${this.config.name}" is not connected.`);
+    }
+
+    this.socket.write(`${message}\n`);
+  }
+
+  sendRequest(payload) {
+    if (this.pendingRequest) {
+      return Promise.reject(new Error(`KF2 server "${this.config.name}" is already processing another request.`));
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (this.pendingRequest) {
+          this.pendingRequest = null;
+          reject(new Error('Timed out waiting for /dsresponse.'));
+        }
+      }, KF2_REQUEST_TIMEOUT_MS);
+
+      this.pendingRequest = {
+        resolve,
+        reject,
+        timeout,
+      };
+
+      try {
+        this.sendMessage(payload);
+      } catch (error) {
+        this.pendingRequest = null;
+        clearTimeout(timeout);
+        reject(error);
+      }
+    });
+  }
+
+  failPendingRequest(message) {
+    if (!this.pendingRequest) {
+      return;
+    }
+
+    const pendingRequest = this.pendingRequest;
+    this.pendingRequest = null;
+    clearTimeout(pendingRequest.timeout);
+    pendingRequest.reject(new Error(message));
+  }
+
+  stop() {
+    this.manuallyStopped = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = null;
+    }
+  }
 }
 
 function isValidSteamId64(steamId) {
@@ -1059,83 +1507,11 @@ async function postResponse(interaction, request, responsePayload, successMessag
 }
 
 function sendPayloadToRelay(relay, payload) {
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({
-      host: RELAY_HOST,
-      port: relay.discordBotPort,
-    });
+  if (!relay.connection) {
+    return Promise.reject(new Error(`No KF2 connection is available for "${relay.difficulty}".`));
+  }
 
-    let buffer = '';
-    let settled = false;
-
-    const fail = (message) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      socket.destroy();
-      reject(new Error(message));
-    };
-
-    socket.setTimeout(RELAY_REQUEST_TIMEOUT_MS);
-
-    socket.once('connect', () => {
-      const requestLine = JSON.stringify({ payload });
-      socket.write(`${requestLine}\n`);
-    });
-
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
-      const newlineIndex = buffer.indexOf('\n');
-
-      if (newlineIndex === -1) {
-        return;
-      }
-
-      const line = buffer.slice(0, newlineIndex).trim();
-      if (!line) {
-        fail('Relay returned an empty response.');
-        return;
-      }
-
-      try {
-        const response = JSON.parse(line);
-
-        if (response.error) {
-          fail(response.error);
-          return;
-        }
-
-        if (typeof response.payload !== 'string' || response.payload.trim() === '') {
-          fail('Relay returned an invalid payload.');
-          return;
-        }
-
-        if (!settled) {
-          settled = true;
-          socket.end();
-          resolve(response.payload.trim());
-        }
-      } catch (error) {
-        fail('Relay returned malformed JSON.');
-      }
-    });
-
-    socket.on('timeout', () => {
-      fail('Timed out waiting for the relay response.');
-    });
-
-    socket.on('error', (error) => {
-      fail(`Failed to connect to relay on port ${relay.discordBotPort}: ${error.message}`);
-    });
-
-    socket.on('close', () => {
-      if (!settled) {
-        fail('Relay closed the connection before sending a response.');
-      }
-    });
-  });
+  return relay.connection.sendRequest(payload);
 }
 
 async function processRelayQueue(difficulty) {
@@ -1168,7 +1544,7 @@ async function processRelayQueue(difficulty) {
           job.interaction,
           job.request,
           responsePayload,
-          `Sent to relay "${difficulty}" and posted the response.`,
+          `Sent to KF2 server "${difficulty}" and posted the response.`,
         );
       } catch (error) {
         console.error(`Failed to process command: ${error.message || error}`);
@@ -1279,16 +1655,65 @@ async function registerCommands() {
   console.log(
     `Registered commands: ${commandDefinitions.map((command) => `/${command.name}`).join(', ')}`,
   );
-  console.log(`Heartbeat directory: ${HEARTBEAT_DIR}`);
+}
+
+function getMessageDisplayName(message) {
+  return message.member?.displayName || message.author.globalName || message.author.username;
+}
+
+function initializeKf2Connections() {
+  const serverConfigs = loadServerConfigs();
+
+  if (serverConfigs.length === 0) {
+    console.warn('No KF2 servers are enabled. Set KF2_SERVER_1_ENABLED=true and related settings in .env.');
+  }
+
+  applyServerConfigs(serverConfigs);
+  watchEnvFileForServerConfigChanges();
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+  try {
+    initializeKf2Connections();
+  } catch (error) {
+    console.error(error.message || error);
+    process.exit(1);
+  }
   console.log(`Active difficulties: ${activeDifficulties.join(', ') || 'none'}`);
+});
+
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot || !message.guild) {
+    return;
+  }
+
+  const matchingConnections = kf2Connections.filter((connection) =>
+    connection.config.forwardDiscordToKf2
+    && connection.config.channelId === message.channelId,
+  );
+
+  if (matchingConnections.length === 0) {
+    return;
+  }
+
+  const payload = `[Discord] ${getMessageDisplayName(message)}: ${message.content}`;
+
+  for (const connection of matchingConnections) {
+    try {
+      connection.sendMessage(payload);
+    } catch (error) {
+      console.warn(`Failed to forward Discord message to "${connection.config.name}": ${error.message || error}`);
+    }
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -1348,8 +1773,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 (async () => {
-  refreshActiveRelays();
-  setInterval(refreshActiveRelays, HEARTBEAT_REFRESH_MS);
   await registerCommands();
   await client.login(TOKEN);
-})();
+})().catch((error) => {
+  console.error(error.message || error);
+  process.exit(1);
+});

@@ -75,10 +75,26 @@ You will need the following values:
 - `DISCORD_TOKEN` - from the Discord Developer Portal under `Bot`
 - `CLIENT_ID` - from `General Information`
 - `GUILD_ID` - enable Discord Developer Mode, then right-click your server and copy its ID
+- `STEAM_API_KEY` - optional, used to show Steam avatars when forwarding KF2 chat through a webhook
+- `KF2_SERVER_1_*` through `KF2_SERVER_5_*` - direct KF2 socket and Discord channel settings
 
 Discord Developer Portal:
 
 https://discord.com/developers/applications
+
+For each KF2 server block in `.env`:
+
+- `KF2_SERVER_N_ENABLED` turns that server connection on or off.
+- `KF2_SERVER_N_HOST` and `KF2_SERVER_N_PORT` point to the same KF2 socket port the Java relay used before.
+- `KF2_SERVER_N_DISCORD_CHANNEL_ID` is the Discord channel used for chat forwarding.
+- `KF2_SERVER_N_WEBHOOK_URL` is optional. If set, KF2 messages are posted through that webhook with player names and avatars. If empty, the bot posts plain text messages.
+- `KF2_SERVER_N_FORWARD_KF2_TO_DISCORD` controls KF2 chat to Discord.
+- `KF2_SERVER_N_FORWARD_DISCORD_TO_KF2` controls Discord chat to KF2.
+- `KF2_SERVER_N_COMMANDS_ENABLED` controls whether slash commands can use that connected server.
+
+The bot needs the `MESSAGE CONTENT INTENT` enabled in the Discord Developer Portal if you want Discord channel messages forwarded back to KF2.
+
+While the bot is running, changes to the `KF2_SERVER_1_*` through `KF2_SERVER_5_*` blocks in `discord-bot-script/.env` are reloaded automatically. Changing a server host or port restarts only that KF2 socket connection. Discord token, client ID, guild ID, and slash command definitions still require restarting the bot.
 
 ## 4. Run the bot
 
