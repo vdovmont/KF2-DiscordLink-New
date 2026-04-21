@@ -555,12 +555,33 @@ function parseKf2ChatPayload(message, config) {
   }
 
   return {
-    steamId: parts[0],
+    steamId: normalizeSteamId(parts[0]),
     username: parts[1],
     content: parts.slice(2).join('^$'),
     avatarUrl: '',
     serverName: config.name,
   };
+}
+
+function normalizeSteamId(rawSteamId) {
+  const value = String(rawSteamId || '').trim();
+  if (!value) {
+    return '';
+  }
+
+  try {
+    if (/^[+-]?0x[0-9a-f]+$/i.test(value)) {
+      return BigInt(value).toString(10);
+    }
+
+    if (/^[+-]?\d+$/.test(value)) {
+      return BigInt(value).toString(10);
+    }
+  } catch (error) {
+    console.warn(`Could not normalize SteamID "${value}": ${error.message || error}`);
+  }
+
+  return value;
 }
 
 async function resolveSteamAvatarUrl(steamId, username) {
@@ -579,7 +600,12 @@ async function resolveSteamAvatarUrl(steamId, username) {
     }
 
     const data = await response.json();
-    return data?.response?.players?.[0]?.avatar || '';
+    const avatarUrl = data?.response?.players?.[0]?.avatar || '';
+    if (!avatarUrl) {
+      console.warn(`Steam API returned no avatar for ${username} (${steamId}).`);
+    }
+
+    return avatarUrl;
   } catch (error) {
     console.warn(`Could not retrieve ${username}'s avatar: ${error.message || error}`);
     return '';
@@ -610,6 +636,10 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
 
   try {
     if (config.webhookUrl) {
+      if (!avatarUrl) {
+        console.warn(`Posting webhook message for ${chatMessage.username} without avatar_url.`);
+      }
+
       await sendWebhookMessage(config.webhookUrl, {
         username: chatMessage.username,
         avatar_url: avatarUrl || undefined,
