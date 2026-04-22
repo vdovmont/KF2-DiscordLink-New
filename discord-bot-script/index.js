@@ -1564,13 +1564,18 @@ function formatResponse(interaction, request, responsePayload) {
   return responsePayload;
 }
 
-function wrapFormattedResponse(request, responseText) {
+function getInteractionUserMention(interaction) {
+  return interaction.user?.id ? `<@${interaction.user.id}>` : '@unknown-user';
+}
+
+function wrapFormattedResponse(interaction, request, responseText) {
   const separator = '-----------------------------------------------';
-  return `${separator}\n${responseText}\n${separator}`;
+  return `${separator}\n${getInteractionUserMention(interaction)}\n${responseText}\n${separator}`;
 }
 
 async function postResponse(interaction, request, responsePayload, successMessage) {
   const formattedResponse = wrapFormattedResponse(
+    interaction,
     request,
     formatResponse(interaction, request, responsePayload),
   );
