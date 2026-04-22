@@ -1395,6 +1395,8 @@ function formatInfoResponse(interaction, request, responsePayload) {
         name: player.name.trim(),
         status: typeof player.status === 'string' ? player.status.trim().toLowerCase() : 'unknown',
         country: typeof player.country === 'string' && player.country.trim() ? player.country.trim() : '--',
+        hasMastery: Object.prototype.hasOwnProperty.call(player, 'mastery'),
+        mastery: player.mastery,
         prestige: Number.isNaN(Number.parseInt(player.prestige, 10)) ? 0 : Number.parseInt(player.prestige, 10),
         level: Number.isNaN(Number.parseInt(player.level, 10)) ? 0 : Number.parseInt(player.level, 10),
         role: typeof player.role === 'string' ? player.role.trim() : 'Unknown',
@@ -1405,7 +1407,13 @@ function formatInfoResponse(interaction, request, responsePayload) {
       lines.push('Players:');
     }
 
+    const usesMastery = playerEntries.length > 0 && playerEntries.every((player) =>
+      player.hasMastery && !Number.isNaN(Number.parseInt(player.mastery, 10)),
+    );
     const longestNameLength = Math.max(1, ...playerEntries.map((player) => player.name.length));
+    const longestMasteryLength = usesMastery
+      ? Math.max(1, ...playerEntries.map((player) => String(Number.parseInt(player.mastery, 10)).length))
+      : 1;
     const longestPrestigeLength = Math.max(1, ...playerEntries.map((player) => String(player.prestige).length));
     const longestLevelLength = Math.max(1, ...playerEntries.map((player) => String(player.level).length));
 
@@ -1415,9 +1423,14 @@ function formatInfoResponse(interaction, request, responsePayload) {
         : `\`${player.role}\``;
       const statusEmoji = player.status === 'dead' ? '💀' : '❤️';
       const rowParts = [player.name.padEnd(longestNameLength, ' '), statusEmoji, player.country];
+      const rankParts = [];
+      if (usesMastery) {
+        rankParts.push(String(Number.parseInt(player.mastery, 10)).padStart(longestMasteryLength, ' '));
+      }
       const paddedPrestige = String(player.prestige).padStart(longestPrestigeLength, ' ');
       const paddedLevel = String(player.level).padStart(longestLevelLength, ' ');
-      rowParts.push(`${paddedPrestige}-${paddedLevel}`);
+      rankParts.push(paddedPrestige, paddedLevel);
+      rowParts.push(rankParts.join('-'));
 
       lines.push(`${prefix ? `${prefix} ` : ''}\`${rowParts.join(' | ')}\``);
     }
