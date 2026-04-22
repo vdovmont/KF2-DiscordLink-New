@@ -12,6 +12,8 @@ try {
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
+const stringWidthModule = require('string-width');
+const stringWidth = stringWidthModule.default || stringWidthModule;
 
 const ENV_FILE_PATH = path.resolve(__dirname, '.env');
 
@@ -55,6 +57,20 @@ function logWarn(message) {
 
 function logError(message) {
   logWithTimestamp('error', message);
+}
+
+function getDiscordTextWidth(value) {
+  return stringWidth(String(value).normalize('NFKC'));
+}
+
+function normalizeDiscordTableText(value) {
+  return String(value).normalize('NFKC');
+}
+
+function padEndByDiscordTextWidth(value, targetWidth) {
+  const text = String(value);
+  const padding = Math.max(0, targetWidth - getDiscordTextWidth(text));
+  return text + ' '.repeat(padding);
 }
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
@@ -1198,6 +1214,7 @@ function parseRankings(responsePayload) {
     entries.push({
       rank,
       playerName,
+      displayPlayerName: normalizeDiscordTableText(playerName),
       points,
     });
   }
@@ -1397,6 +1414,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
       .filter((player) => player && typeof player.name === 'string' && player.name.trim() !== '')
       .map((player) => ({
         name: player.name.trim(),
+        displayName: normalizeDiscordTableText(player.name.trim()),
         status: typeof player.status === 'string' ? player.status.trim().toLowerCase() : 'unknown',
         country: typeof player.country === 'string' && player.country.trim() ? player.country.trim() : '--',
         hasMastery: Object.prototype.hasOwnProperty.call(player, 'mastery'),
@@ -1414,7 +1432,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
     const usesMastery = playerEntries.length > 0 && playerEntries.every((player) =>
       player.hasMastery && !Number.isNaN(Number.parseInt(player.mastery, 10)),
     );
-    const longestNameLength = Math.max(1, ...playerEntries.map((player) => player.name.length));
+    const longestNameLength = Math.max(1, ...playerEntries.map((player) => getDiscordTextWidth(player.displayName)));
     const longestMasteryLength = usesMastery
       ? Math.max(1, ...playerEntries.map((player) => String(Number.parseInt(player.mastery, 10)).length))
       : 1;
@@ -1426,7 +1444,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
         ? resolveGuildEmoji(interaction, player.perk.emojiName)
         : `\`${player.role}\``;
       const statusEmoji = player.status === 'dead' ? '💀' : '❤️';
-      const rowParts = [player.name.padEnd(longestNameLength, ' '), statusEmoji, player.country];
+      const rowParts = [padEndByDiscordTextWidth(player.displayName, longestNameLength), statusEmoji, player.country];
       const rankParts = [];
       if (usesMastery) {
         rankParts.push(String(Number.parseInt(player.mastery, 10)).padStart(longestMasteryLength, ' '));
@@ -1479,7 +1497,7 @@ function formatRankResponse(request, responsePayload) {
     const difficultyLabel = getDifficultyLabel(request.difficulty || 'server');
     const longestPlayerNameLength = Math.max(
       1,
-      ...rankings.map((entry) => entry.playerName.length),
+      ...rankings.map((entry) => getDiscordTextWidth(entry.displayPlayerName)),
     );
     const longestRankLength = Math.max(
       1,
@@ -1493,7 +1511,7 @@ function formatRankResponse(request, responsePayload) {
     const lines = [`Ranking of ${difficultyLabel} server:`];
 
     for (const entry of rankings) {
-      const paddedPlayerName = entry.playerName.padEnd(longestPlayerNameLength, ' ');
+      const paddedPlayerName = padEndByDiscordTextWidth(entry.displayPlayerName, longestPlayerNameLength);
       const paddedRank = String(entry.rank).padStart(longestRankLength, ' ');
       const paddedPoints = String(entry.points).padStart(longestPointsLength, ' ');
       lines.push(`\`${paddedPlayerName}: ${paddedRank} with ${paddedPoints} points\``);
