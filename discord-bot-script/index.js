@@ -20,6 +20,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
 const CDA_AVATAR_URL = process.env.CDA_AVATAR_URL || '';
+const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
 const KF2_RECONNECT_DELAY_MS = Number.parseInt(process.env.KF2_RECONNECT_DELAY_MS || '30000', 10);
 const KF2_CONNECT_TIMEOUT_MS = Number.parseInt(process.env.KF2_CONNECT_TIMEOUT_MS || '5000', 10);
@@ -547,6 +548,19 @@ function parseKf2ChatPayload(message, config) {
   if (parts[0] === 'CDC') {
     return {
       steamId: '1',
+      username: parts[1],
+      content: parts.slice(2).join('^$'),
+      avatarUrl: CDA_AVATAR_URL,
+      serverName: config.name,
+    };
+  }
+
+  if (
+    parts[0].trim().toLowerCase() === KF2_SERVER_MESSAGE_STEAM_ID.toLowerCase()
+    && parts[1].trim().replace(/:$/, '').toLowerCase() === 'server'
+  ) {
+    return {
+      steamId: '',
       username: parts[1],
       content: parts.slice(2).join('^$'),
       avatarUrl: CDA_AVATAR_URL,
