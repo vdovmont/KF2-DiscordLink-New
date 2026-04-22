@@ -30,8 +30,34 @@ const SPECIAL_ACCESS_ROLE_IDS = (process.env.SPECIAL_ACCESS_ROLE_IDS || '')
   .map((roleId) => roleId.trim())
   .filter(Boolean);
 
+function formatLogTimestamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+
+  return `${year}.${month}.${day} ${hours}:${minutes}`;
+}
+
+function logWithTimestamp(level, message) {
+  console[level](`[${formatLogTimestamp()}] ${message}`);
+}
+
+function logInfo(message) {
+  logWithTimestamp('log', message);
+}
+
+function logWarn(message) {
+  logWithTimestamp('warn', message);
+}
+
+function logError(message) {
+  logWithTimestamp('error', message);
+}
+
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
-  console.error('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in .env');
+  logError('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in .env');
   process.exit(1);
 }
 
@@ -159,13 +185,13 @@ function applyServerConfigs(serverConfigs) {
     const nextConfig = nextConfigByIndex.get(connection.config.index);
 
     if (!nextConfig) {
-      console.log(`Disabling KF2 server "${connection.config.name}".`);
+      logInfo(`Disabling KF2 server "${connection.config.name}".`);
       removeConnection(connection);
       continue;
     }
 
     if (requiresSocketRestart(connection.config, nextConfig)) {
-      console.log(`Restarting KF2 server "${nextConfig.name}" connection because host or port changed.`);
+      logInfo(`Restarting KF2 server "${nextConfig.name}" connection because host or port changed.`);
       removeConnection(connection);
 
       const nextConnection = new Kf2Connection(nextConfig);
@@ -175,7 +201,7 @@ function applyServerConfigs(serverConfigs) {
     }
 
     connection.config = nextConfig;
-    console.log(
+    logInfo(
       `Updated KF2 server "${nextConfig.name}" settings; `
       + `KF2->Discord=${nextConfig.forwardKf2ToDiscord ? 'on' : 'off'}, `
       + `Discord->KF2=${nextConfig.forwardDiscordToKf2 ? 'on' : 'off'}, `
@@ -194,7 +220,7 @@ function applyServerConfigs(serverConfigs) {
     kf2Connections.push(connection);
     connection.start();
 
-    console.log(
+    logInfo(
       `Configured KF2 server "${config.name}" (${config.difficulty}) at ${config.host}:${config.port}; `
       + `KF2->Discord=${config.forwardKf2ToDiscord ? 'on' : 'off'}, `
       + `Discord->KF2=${config.forwardDiscordToKf2 ? 'on' : 'off'}, `
@@ -230,15 +256,15 @@ function reloadServerConfigsFromEnvFile() {
   try {
     const serverConfigs = loadServerConfigs(readEnvFileForServerConfigs());
     applyServerConfigs(serverConfigs);
-    console.log(`Reloaded KF2 server config from ${ENV_FILE_PATH}`);
+    logInfo(`Reloaded KF2 server config from ${ENV_FILE_PATH}`);
   } catch (error) {
-    console.error(`Failed to reload KF2 server config: ${error.message || error}`);
+    logError(`Failed to reload KF2 server config: ${error.message || error}`);
   }
 }
 
 function watchEnvFileForServerConfigChanges() {
   if (!fs.existsSync(ENV_FILE_PATH)) {
-    console.warn(`Cannot watch ${ENV_FILE_PATH}; file does not exist.`);
+    logWarn(`Cannot watch ${ENV_FILE_PATH}; file does not exist.`);
     return;
   }
 
@@ -254,11 +280,11 @@ function watchEnvFileForServerConfigChanges() {
       }, 500);
     });
   } catch (error) {
-    console.warn(`Cannot watch ${ENV_FILE_PATH}: ${error.message || error}`);
+    logWarn(`Cannot watch ${ENV_FILE_PATH}: ${error.message || error}`);
     return;
   }
 
-  console.log(`Watching ${ENV_FILE_PATH} for KF2 server config changes.`);
+  logInfo(`Watching ${ENV_FILE_PATH} for KF2 server config changes.`);
 }
 
 function addDifficultyOption(commandBuilder) {
@@ -592,7 +618,7 @@ function normalizeSteamId(rawSteamId) {
       return BigInt(value).toString(10);
     }
   } catch (error) {
-    console.warn(`Could not normalize SteamID "${value}": ${error.message || error}`);
+    logWarn(`Could not normalize SteamID "${value}": ${error.message || error}`);
   }
 
   return value;
@@ -616,12 +642,12 @@ async function resolveSteamAvatarUrl(steamId, username) {
     const data = await response.json();
     const avatarUrl = data?.response?.players?.[0]?.avatar || '';
     if (!avatarUrl) {
-      console.warn(`Steam API returned no avatar for ${username} (${steamId}).`);
+      logWarn(`Steam API returned no avatar for ${username} (${steamId}).`);
     }
 
     return avatarUrl;
   } catch (error) {
-    console.warn(`Could not retrieve ${username}'s avatar: ${error.message || error}`);
+    logWarn(`Could not retrieve ${username}'s avatar: ${error.message || error}`);
     return '';
   }
 }
@@ -651,7 +677,7 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
   try {
     if (config.webhookUrl) {
       if (!avatarUrl) {
-        console.warn(`Posting webhook message for ${chatMessage.username} without avatar_url.`);
+        logWarn(`Posting webhook message for ${chatMessage.username} without avatar_url.`);
       }
 
       await sendWebhookMessage(config.webhookUrl, {
@@ -664,13 +690,13 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
 
     const channel = await client.channels.fetch(config.channelId);
     if (!channel || typeof channel.send !== 'function') {
-      console.warn(`Cannot find Discord channel ${config.channelId} for ${config.name}.`);
+      logWarn(`Cannot find Discord channel ${config.channelId} for ${config.name}.`);
       return;
     }
 
     await channel.send(`[${config.name}] ${chatMessage.username}: ${chatMessage.content}`);
   } catch (error) {
-    console.warn(`Failed to forward KF2 chat from ${config.name} to Discord: ${error.message || error}`);
+    logWarn(`Failed to forward KF2 chat from ${config.name} to Discord: ${error.message || error}`);
   }
 }
 
@@ -710,7 +736,7 @@ class Kf2Connection {
     socket.once('connect', () => {
       socket.setTimeout(0);
       this.connected = true;
-      console.log(`Connected to KF2 server "${this.config.name}" at ${this.config.host}:${this.config.port}`);
+      logInfo(`Connected to KF2 server "${this.config.name}" at ${this.config.host}:${this.config.port}`);
       refreshActiveRelays();
     });
 
@@ -723,7 +749,7 @@ class Kf2Connection {
     });
 
     socket.on('error', (error) => {
-      console.warn(`KF2 server "${this.config.name}" socket error: ${error.message}`);
+      logWarn(`KF2 server "${this.config.name}" socket error: ${error.message}`);
     });
 
     socket.on('close', () => {
@@ -735,7 +761,7 @@ class Kf2Connection {
       refreshActiveRelays();
 
       if (wasConnected) {
-        console.warn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / 1000)} seconds...`);
+        logWarn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / 1000)} seconds...`);
       }
 
       this.scheduleReconnect();
@@ -777,7 +803,7 @@ class Kf2Connection {
     try {
       message = unicodeConvert(rawLine);
     } catch (error) {
-      console.warn(`Failed to decode KF2 message from "${this.config.name}": ${error.message || error}`);
+      logWarn(`Failed to decode KF2 message from "${this.config.name}": ${error.message || error}`);
       return;
     }
 
@@ -789,7 +815,7 @@ class Kf2Connection {
       const chatMessage = parseKf2ChatPayload(message, this.config);
       void forwardKf2ChatToDiscord(this.config, chatMessage);
     } catch (error) {
-      console.warn(`Failed to process KF2 message from "${this.config.name}": ${error.message || error}`);
+      logWarn(`Failed to process KF2 message from "${this.config.name}": ${error.message || error}`);
     }
   }
 
@@ -1590,7 +1616,7 @@ async function processRelayQueue(difficulty) {
           `Sent to KF2 server "${difficulty}" and posted the response.`,
         );
       } catch (error) {
-        console.error(`Failed to process command: ${error.message || error}`);
+        logError(`Failed to process command: ${error.message || error}`);
         await job.interaction.editReply({
           content: error.message || 'Failed to process the request.',
         }).catch(() => {});
@@ -1695,7 +1721,7 @@ async function registerCommands() {
     body: commandDefinitions.map((command) => command.toJSON()),
   });
 
-  console.log(
+  logInfo(
     `Registered commands: ${commandDefinitions.map((command) => `/${command.name}`).join(', ')}`,
   );
 }
@@ -1708,7 +1734,7 @@ function initializeKf2Connections() {
   const serverConfigs = loadServerConfigs();
 
   if (serverConfigs.length === 0) {
-    console.warn('No KF2 servers are enabled. Set KF2_SERVER_1_ENABLED=true and related settings in .env.');
+    logWarn('No KF2 servers are enabled. Set KF2_SERVER_1_ENABLED=true and related settings in .env.');
   }
 
   applyServerConfigs(serverConfigs);
@@ -1724,11 +1750,11 @@ const client = new Client({
 });
 
 client.once(Events.ClientReady, (readyClient) => {
-  console.log(`Logged in as ${readyClient.user.tag}`);
+  logInfo(`Logged in as ${readyClient.user.tag}`);
   try {
     initializeKf2Connections();
   } catch (error) {
-    console.error(error.message || error);
+    logError(error.message || error);
     process.exit(1);
   }
 });
@@ -1753,7 +1779,7 @@ client.on(Events.MessageCreate, async (message) => {
     try {
       connection.sendMessage(payload);
     } catch (error) {
-      console.warn(`Failed to forward Discord message to "${connection.config.name}": ${error.message || error}`);
+      logWarn(`Failed to forward Discord message to "${connection.config.name}": ${error.message || error}`);
     }
   }
 });
@@ -1762,7 +1788,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isAutocomplete()) {
     if (KNOWN_COMMANDS.includes(interaction.commandName)) {
       await handleAutocomplete(interaction).catch((error) => {
-        console.error(`Failed to handle autocomplete: ${error.message || error}`);
+        logError(`Failed to handle autocomplete: ${error.message || error}`);
       });
     }
     return;
@@ -1790,7 +1816,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await enqueueRelayRequest(interaction, request);
   } catch (error) {
     if (!error?.suppressConsoleLog) {
-      console.error(`Failed to process command: ${error.message || error}`);
+      logError(`Failed to process command: ${error.message || error}`);
     }
 
     const response = {
@@ -1818,6 +1844,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   await registerCommands();
   await client.login(TOKEN);
 })().catch((error) => {
-  console.error(error.message || error);
+  logError(error.message || error);
   process.exit(1);
 });
