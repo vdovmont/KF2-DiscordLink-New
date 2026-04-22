@@ -787,7 +787,6 @@ class Kf2Connection {
 
     try {
       const chatMessage = parseKf2ChatPayload(message, this.config);
-      console.log(`[${this.config.name}] ${chatMessage.username}: ${chatMessage.content}`);
       void forwardKf2ChatToDiscord(this.config, chatMessage);
     } catch (error) {
       console.warn(`Failed to process KF2 message from "${this.config.name}": ${error.message || error}`);
