@@ -962,6 +962,7 @@ function buildRelayRequest(interaction) {
     return {
       commandName,
       difficulty: relay.difficulty,
+      requestedTarget: nickname ? nickname.trim() : steamId.trim(),
       payload: nickname
         ? `/dsrequest vipinfo nickname:${nickname.trim()}`
         : `/dsrequest vipinfo steamid:${steamId.trim()}`,
@@ -1278,12 +1279,14 @@ function formatVipInfoResponse(request, responsePayload) {
     return responsePayload;
   }
 
+  const target = request.requestedTarget || 'User';
+
   if (vipInfo.type.toLowerCase() === 'none' || vipInfo.daysLeft <= 0) {
-    return `You don't have VIP or your VIP already expired`;
+    return `${target} don't have VIP or his VIP already expired`;
   }
 
   const dayLabel = vipInfo.daysLeft === 1 ? 'day' : 'days';
-  return `You have ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
+  return `${target} have ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
 }
 
 function formatWaveTypeLabel(waveType) {
