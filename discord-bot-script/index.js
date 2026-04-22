@@ -1731,7 +1731,6 @@ client.once(Events.ClientReady, (readyClient) => {
     console.error(error.message || error);
     process.exit(1);
   }
-  console.log(`Active difficulties: ${activeDifficulties.join(', ') || 'none'}`);
 });
 
 client.on(Events.MessageCreate, async (message) => {
