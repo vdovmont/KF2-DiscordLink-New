@@ -1538,12 +1538,16 @@ function formatRankResponse(request, responsePayload) {
     ...rankEntries.map((entry) => String(entry.points).length),
   );
   const projectedVipDays = rankEntries.reduce(
-    (totalDays, entry) => totalDays + Math.max(11 - entry.rank, 0),
+    (totalDays, entry) => totalDays + (entry.rank > 0 ? Math.max(11 - entry.rank, 0) : 0),
     0,
   );
 
   const lines = rankEntries.map((entry) => {
     const paddedLabel = entry.label.padEnd(longestLabelLength, ' ');
+    if (entry.rank === 0) {
+      return `\`${paddedLabel}: Unranked\``;
+    }
+
     const paddedRank = String(entry.rank).padStart(longestRankLength, ' ');
     const paddedPoints = String(entry.points).padStart(longestPointsLength, ' ');
     return `\`${paddedLabel}: Rank ${paddedRank} with ${paddedPoints} points\``;
