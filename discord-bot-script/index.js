@@ -1058,6 +1058,7 @@ function buildRelayRequest(interaction) {
   return {
     commandName,
     difficulty: relay.difficulty,
+    requestedTarget: nickname ? nickname.trim() : steamId.trim(),
     payload: nickname
       ? `/dsrequest rank nickname:${nickname.trim()}`
       : `/dsrequest rank steamid:${steamId.trim()}`,
@@ -1542,7 +1543,9 @@ function formatRankResponse(request, responsePayload) {
     0,
   );
 
-  const lines = rankEntries.map((entry) => {
+  const lines = request.requestedTarget ? [request.requestedTarget] : [];
+
+  lines.push(...rankEntries.map((entry) => {
     const paddedLabel = entry.label.padEnd(longestLabelLength, ' ');
     if (entry.rank === 0) {
       return `\`${paddedLabel}: Unranked\``;
@@ -1551,7 +1554,7 @@ function formatRankResponse(request, responsePayload) {
     const paddedRank = String(entry.rank).padStart(longestRankLength, ' ');
     const paddedPoints = String(entry.points).padStart(longestPointsLength, ' ');
     return `\`${paddedLabel}: Rank ${paddedRank} with ${paddedPoints} points\``;
-  });
+  }));
 
   if (projectedVipDays > 0) {
     const dayLabel = projectedVipDays === 1 ? 'day' : 'days';
