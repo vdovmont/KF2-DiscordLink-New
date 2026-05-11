@@ -1293,12 +1293,11 @@ function formatVipInfoResponse(request, responsePayload) {
     return responsePayload;
   }
 
+  const target = request.requestedTarget || 'User';
   const vipInfo = parseVipInfo(responsePayload);
   if (!vipInfo) {
-    return responsePayload;
+    return `${target}: ${String(responsePayload).trim() || 'Empty server response'}`;
   }
-
-  const target = request.requestedTarget || 'User';
 
   if (vipInfo.type.toLowerCase() === 'none' || vipInfo.daysLeft <= 0) {
     return `${target} doesn't have VIP or his VIP has already expired`;
@@ -1569,6 +1568,10 @@ function formatResponse(interaction, request, responsePayload) {
 
   const parsedPayload = parseRelayJsonPayload(responsePayload);
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
+    if (request.commandName === 'vipinfo') {
+      const target = request.requestedTarget || 'User';
+      return `${target}: ${parsedPayload.error.trim()}`;
+    }
     return parsedPayload.error.trim();
   }
 
