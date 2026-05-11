@@ -1301,11 +1301,11 @@ function formatVipInfoResponse(request, responsePayload) {
   const target = request.requestedTarget || 'User';
 
   if (vipInfo.type.toLowerCase() === 'none' || vipInfo.daysLeft <= 0) {
-    return `${target} don't have VIP or his VIP already expired`;
+    return `${target} doesn't have VIP or his VIP has already expired`;
   }
 
   const dayLabel = vipInfo.daysLeft === 1 ? 'day' : 'days';
-  return `${target} have ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
+  return `${target} has ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
 }
 
 function formatWaveTypeLabel(waveType) {
