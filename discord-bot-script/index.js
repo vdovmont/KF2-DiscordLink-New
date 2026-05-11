@@ -1433,7 +1433,6 @@ function formatInfoResponse(interaction, request, responsePayload) {
     const usesMastery = playerEntries.length > 0 && playerEntries.every((player) =>
       player.hasMastery && !Number.isNaN(Number.parseInt(player.mastery, 10)),
     );
-    const longestNameLength = Math.max(1, ...playerEntries.map((player) => getDiscordTextWidth(player.displayName)));
     const longestMasteryLength = usesMastery
       ? Math.max(1, ...playerEntries.map((player) => String(Number.parseInt(player.mastery, 10)).length))
       : 1;
@@ -1445,7 +1444,6 @@ function formatInfoResponse(interaction, request, responsePayload) {
         ? resolveGuildEmoji(interaction, player.perk.emojiName)
         : `\`${player.role}\``;
       const statusEmoji = player.status === 'dead' ? '💀' : '❤️';
-      const rowParts = [padEndByDiscordTextWidth(player.displayName, longestNameLength), statusEmoji, player.country];
       const rankParts = [];
       if (usesMastery) {
         rankParts.push(String(Number.parseInt(player.mastery, 10)).padStart(longestMasteryLength, ' '));
@@ -1453,7 +1451,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
       const paddedPrestige = String(player.prestige).padStart(longestPrestigeLength, ' ');
       const paddedLevel = String(player.level).padStart(longestLevelLength, ' ');
       rankParts.push(paddedPrestige, paddedLevel);
-      rowParts.push(rankParts.join('-'));
+      const rowParts = [rankParts.join('-'), statusEmoji, player.country, player.displayName];
 
       lines.push(`${prefix ? `${prefix} ` : ''}\`${rowParts.join(' | ')}\``);
     }
