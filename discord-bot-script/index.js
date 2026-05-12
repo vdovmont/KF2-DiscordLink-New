@@ -21,16 +21,16 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
-const CDA_AVATAR_URL = process.env.CDA_AVATAR_URL || '';
 const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
-const KF2_RECONNECT_DELAY_MS = Number.parseInt(process.env.KF2_RECONNECT_DELAY_MS || '30000', 10);
-const KF2_CONNECT_TIMEOUT_MS = Number.parseInt(process.env.KF2_CONNECT_TIMEOUT_MS || '5000', 10);
-const KF2_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.KF2_REQUEST_TIMEOUT_MS || '60000', 10);
-const SPECIAL_ACCESS_ROLE_IDS = (process.env.SPECIAL_ACCESS_ROLE_IDS || '')
-  .split(',')
-  .map((roleId) => roleId.trim())
-  .filter(Boolean);
+const initialRuntimeConfig = loadRuntimeConfig(process.env);
+let CDA_AVATAR_URL = initialRuntimeConfig.cdaAvatarUrl;
+let KF2_RECONNECT_DELAY_MS = initialRuntimeConfig.kf2ReconnectDelayMs;
+let KF2_CONNECT_TIMEOUT_MS = initialRuntimeConfig.kf2ConnectTimeoutMs;
+let KF2_REQUEST_TIMEOUT_MS = initialRuntimeConfig.kf2RequestTimeoutMs;
+let KF2_VOTE_DISCORD_CHANNEL_ID = initialRuntimeConfig.kf2VoteDiscordChannelId;
+let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
+let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
 
 function formatLogTimestamp(date = new Date()) {
   const year = date.getFullYear();
@@ -116,6 +116,7 @@ let activeDifficulties = [];
 const relayQueues = new Map();
 const processingDifficulties = new Set();
 const kf2Connections = [];
+const activeVotes = new Map();
 let envReloadTimer = null;
 
 function parseBoolean(value, defaultValue = false) {
@@ -124,6 +125,46 @@ function parseBoolean(value, defaultValue = false) {
   }
 
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function parseInteger(value, defaultValue) {
+  const parsedValue = Number.parseInt(value || String(defaultValue), 10);
+  return Number.isInteger(parsedValue) ? parsedValue : defaultValue;
+}
+
+function parseRoleIds(value) {
+  return (value || '')
+    .split(',')
+    .map((roleId) => roleId.trim())
+    .filter(Boolean);
+}
+
+function loadRuntimeConfig(env = process.env) {
+  return {
+    cdaAvatarUrl: env.CDA_AVATAR_URL || '',
+    kf2ReconnectDelayMs: parseInteger(env.KF2_RECONNECT_DELAY_MS, 30000),
+    kf2ConnectTimeoutMs: parseInteger(env.KF2_CONNECT_TIMEOUT_MS, 5000),
+    kf2RequestTimeoutMs: parseInteger(env.KF2_REQUEST_TIMEOUT_MS, 60000),
+    kf2VoteDiscordChannelId: (env.KF2_VOTE_DISCORD_CHANNEL_ID || '').trim(),
+    kf2VoteTimeoutMs: parseInteger(env.KF2_VOTE_TIMEOUT_MS, 30000),
+    specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
+  };
+}
+
+function applyRuntimeConfig(config) {
+  CDA_AVATAR_URL = config.cdaAvatarUrl;
+  KF2_RECONNECT_DELAY_MS = config.kf2ReconnectDelayMs;
+  KF2_CONNECT_TIMEOUT_MS = config.kf2ConnectTimeoutMs;
+  KF2_REQUEST_TIMEOUT_MS = config.kf2RequestTimeoutMs;
+  KF2_VOTE_DISCORD_CHANNEL_ID = config.kf2VoteDiscordChannelId;
+  KF2_VOTE_TIMEOUT_MS = config.kf2VoteTimeoutMs;
+  SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
+}
+
+function isReloadableEnvKey(key) {
+  return key === 'CDA_AVATAR_URL'
+    || key === 'SPECIAL_ACCESS_ROLE_IDS'
+    || /^KF2_/.test(key);
 }
 
 function readServerConfig(index, env = process.env) {
@@ -152,6 +193,7 @@ function readServerConfig(index, env = process.env) {
     host: env[`${prefix}HOST`] || '127.0.0.1',
     port,
     channelId: (env[`${prefix}DISCORD_CHANNEL_ID`] || '').trim(),
+    voteChannelId: (env[`${prefix}VOTE_DISCORD_CHANNEL_ID`] || env.KF2_VOTE_DISCORD_CHANNEL_ID || '').trim(),
     webhookUrl: (env[`${prefix}WEBHOOK_URL`] || '').trim(),
     forwardKf2ToDiscord: parseBoolean(env[`${prefix}FORWARD_KF2_TO_DISCORD`], true),
     forwardDiscordToKf2: parseBoolean(env[`${prefix}FORWARD_DISCORD_TO_KF2`], true),
@@ -248,7 +290,7 @@ function applyServerConfigs(serverConfigs) {
   refreshActiveRelays();
 }
 
-function readEnvFileForServerConfigs() {
+function readEnvFileForRuntimeConfigs() {
   if (!dotenv) {
     throw new Error('dotenv is required for live .env reloads.');
   }
@@ -258,7 +300,7 @@ function readEnvFileForServerConfigs() {
   const configEnv = { ...process.env };
 
   for (const key of Object.keys(configEnv)) {
-    if (/^KF2_SERVER_\d+_/.test(key)) {
+    if (isReloadableEnvKey(key)) {
       delete configEnv[key];
     }
   }
@@ -269,13 +311,15 @@ function readEnvFileForServerConfigs() {
   };
 }
 
-function reloadServerConfigsFromEnvFile() {
+function reloadRuntimeConfigsFromEnvFile() {
   try {
-    const serverConfigs = loadServerConfigs(readEnvFileForServerConfigs());
+    const env = readEnvFileForRuntimeConfigs();
+    applyRuntimeConfig(loadRuntimeConfig(env));
+    const serverConfigs = loadServerConfigs(env);
     applyServerConfigs(serverConfigs);
-    logInfo(`Reloaded KF2 server config from ${ENV_FILE_PATH}`);
+    logInfo(`Reloaded runtime config from ${ENV_FILE_PATH}`);
   } catch (error) {
-    logError(`Failed to reload KF2 server config: ${error.message || error}`);
+    logError(`Failed to reload runtime config: ${error.message || error}`);
   }
 }
 
@@ -293,7 +337,7 @@ function watchEnvFileForServerConfigChanges() {
 
       envReloadTimer = setTimeout(() => {
         envReloadTimer = null;
-        reloadServerConfigsFromEnvFile();
+        reloadRuntimeConfigsFromEnvFile();
       }, 500);
     });
   } catch (error) {
@@ -456,6 +500,7 @@ const commandDefinitions = [
             { name: 'perk', value: 'perk' },
             { name: 'vipinfo', value: 'vipinfo' },
             { name: 'rank', value: 'rank' },
+            { name: 'vote', value: 'vote' },
           ),
       )
       .addStringOption((option) =>
@@ -467,7 +512,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('difficulty')
-          .setDescription('Difficulty to mimic for commands like /rank or /info')
+          .setDescription('Difficulty to mimic for commands like /rank, /info, or vote')
           .setRequired(false)
           .addChoices(
             { name: 'Normal', value: 'normal' },
@@ -717,6 +762,215 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
   }
 }
 
+function parseVotePayload(message) {
+  const parsedPayload = parseRelayJsonPayload(message);
+  if (!parsedPayload || parsedPayload.type !== 'vote' || typeof parsedPayload.subtype !== 'string') {
+    return null;
+  }
+
+  return parsedPayload;
+}
+
+function isVoteStartSubtype(subtype) {
+  return ['kick', 'pause', 'skip'].includes(subtype);
+}
+
+function formatVoteBoolean(value) {
+  return value ? '✅' : '❌';
+}
+
+function normalizeVotePlayerName(value) {
+  return String(value || '').trim();
+}
+
+function getVoteStateKey(config) {
+  return config.difficulty;
+}
+
+function clearVoteState(difficulty) {
+  const state = activeVotes.get(difficulty);
+  if (!state) {
+    return;
+  }
+
+  if (state.timeout) {
+    clearTimeout(state.timeout);
+  }
+
+  activeVotes.delete(difficulty);
+}
+
+function buildVoteHeader(state) {
+  const difficultyLabel = state.difficultyLabel || getDifficultyLabel(state.difficulty);
+
+  if (state.subtype === 'kick') {
+    const target = state.target || 'Unknown';
+    return `${difficultyLabel} - ${state.initiator} initiated kick of ${target}:`;
+  }
+
+  return `${difficultyLabel} - ${state.initiator} initiated ${state.subtype} vote:`;
+}
+
+function formatVoteMessage(state) {
+  const separator = '-----------------------------------------------';
+  const lines = [
+    separator,
+    buildVoteHeader(state),
+  ];
+
+  for (const player of state.players) {
+    const voteValue = state.votes.get(player.key);
+    const mark = voteValue === true ? '✅' : voteValue === false ? '❌' : '❔';
+    lines.push(`${mark}\t${player.name}`);
+  }
+
+  if (typeof state.result === 'boolean') {
+    lines.push(`Result: ${formatVoteBoolean(state.result)}`);
+  }
+
+  lines.push(separator);
+  return lines.join('\n');
+}
+
+function queueVoteMessageEdit(state) {
+  if (!state.message || typeof state.message.edit !== 'function') {
+    return;
+  }
+
+  state.editPromise = (state.editPromise || Promise.resolve())
+    .then(() => state.message.edit(formatVoteMessage(state)))
+    .catch((error) => {
+      logWarn(`Failed to edit vote message for "${state.difficulty}": ${error.message || error}`);
+    });
+}
+
+function addVotePlayerIfMissing(state, playerName) {
+  const name = normalizeVotePlayerName(playerName);
+  if (!name) {
+    return null;
+  }
+
+  const key = name.toLowerCase();
+  const existingPlayer = state.players.find((player) => player.key === key);
+  if (existingPlayer) {
+    return existingPlayer;
+  }
+
+  const player = { key, name };
+  state.players.push(player);
+  return player;
+}
+
+async function startVoteState(config, payload) {
+  const difficulty = getVoteStateKey(config);
+  clearVoteState(difficulty);
+
+  const initiator = normalizeVotePlayerName(payload.initiator) || 'Unknown';
+  const state = {
+    difficulty,
+    difficultyLabel: getDifficultyLabel(difficulty),
+    subtype: payload.subtype,
+    initiator,
+    target: normalizeVotePlayerName(payload.target),
+    players: [],
+    votes: new Map(),
+    result: null,
+    message: null,
+    timeout: null,
+    editPromise: Promise.resolve(),
+  };
+
+  if (Array.isArray(payload.players)) {
+    for (const player of payload.players) {
+      addVotePlayerIfMissing(state, player?.name);
+    }
+  }
+
+  addVotePlayerIfMissing(state, initiator);
+  state.votes.set(initiator.toLowerCase(), true);
+
+  state.timeout = setTimeout(() => {
+    clearVoteState(difficulty);
+    logInfo(`Cleared timed-out vote state for "${difficulty}".`);
+  }, KF2_VOTE_TIMEOUT_MS);
+
+  activeVotes.set(difficulty, state);
+
+  const channelId = config.voteChannelId || KF2_VOTE_DISCORD_CHANNEL_ID;
+  if (!channelId) {
+    logWarn(`Cannot post vote message for "${config.name}"; set KF2_SERVER_${config.index}_VOTE_DISCORD_CHANNEL_ID or KF2_VOTE_DISCORD_CHANNEL_ID.`);
+    return;
+  }
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || typeof channel.send !== 'function') {
+      logWarn(`Cannot find vote Discord channel ${channelId} for ${config.name}.`);
+      return;
+    }
+
+    state.message = await channel.send(formatVoteMessage(state));
+    queueVoteMessageEdit(state);
+  } catch (error) {
+    logWarn(`Failed to post vote message for ${config.name}: ${error.message || error}`);
+  }
+}
+
+function updateVoteState(config, payload) {
+  const difficulty = getVoteStateKey(config);
+  const state = activeVotes.get(difficulty);
+  if (!state) {
+    logWarn(`Received vote update for "${difficulty}" without an active vote.`);
+    return;
+  }
+
+  const player = addVotePlayerIfMissing(state, payload.player);
+  if (!player || typeof payload.value !== 'boolean') {
+    logWarn(`Received invalid vote update for "${difficulty}".`);
+    return;
+  }
+
+  state.votes.set(player.key, payload.value);
+  queueVoteMessageEdit(state);
+}
+
+function finishVoteState(config, payload) {
+  const difficulty = getVoteStateKey(config);
+  const state = activeVotes.get(difficulty);
+  if (!state) {
+    logWarn(`Received vote result for "${difficulty}" without an active vote.`);
+    return;
+  }
+
+  if (typeof payload.value !== 'boolean') {
+    logWarn(`Received invalid vote result for "${difficulty}".`);
+    return;
+  }
+
+  state.result = payload.value;
+  queueVoteMessageEdit(state);
+  clearVoteState(difficulty);
+}
+
+async function handleKf2VotePayload(config, payload) {
+  if (isVoteStartSubtype(payload.subtype)) {
+    await startVoteState(config, payload);
+    return;
+  }
+
+  if (payload.subtype === 'vote') {
+    updateVoteState(config, payload);
+    return;
+  }
+
+  if (payload.subtype === 'result') {
+    finishVoteState(config, payload);
+    return;
+  }
+
+  logWarn(`Received unknown vote subtype "${payload.subtype}" from ${config.name}.`);
+}
+
 class Kf2Connection {
   constructor(config) {
     this.config = config;
@@ -820,7 +1074,19 @@ class Kf2Connection {
     try {
       message = unicodeConvert(rawLine);
     } catch (error) {
+      const votePayload = parseVotePayload(rawLine);
+      if (votePayload) {
+        void handleKf2VotePayload(this.config, votePayload);
+        return;
+      }
+
       logWarn(`Failed to decode KF2 message from "${this.config.name}": ${error.message || error}`);
+      return;
+    }
+
+    const votePayload = parseVotePayload(message);
+    if (votePayload) {
+      void handleKf2VotePayload(this.config, votePayload);
       return;
     }
 
@@ -1702,6 +1968,22 @@ async function enqueueRelayRequest(interaction, request) {
   void processRelayQueue(request.difficulty);
 }
 
+function buildExampleVoteConfig(difficulty) {
+  const selectedDifficulty = difficulty || getActiveDifficulties()[0] || 'normal';
+  const relay = getRelayByDifficulty(selectedDifficulty);
+
+  if (relay?.connection?.config) {
+    return relay.connection.config;
+  }
+
+  return {
+    index: 'example',
+    name: getDifficultyLabel(selectedDifficulty),
+    difficulty: selectedDifficulty,
+    voteChannelId: KF2_VOTE_DISCORD_CHANNEL_ID,
+  };
+}
+
 async function handleExampleCommand(interaction) {
   ensureExampleAccess(interaction);
 
@@ -1714,6 +1996,19 @@ async function handleExampleCommand(interaction) {
 
   if (!responsePayload) {
     throw new Error('Provide a response payload for /example.');
+  }
+
+  if (commandName === 'vote') {
+    const votePayload = parseVotePayload(responsePayload);
+    if (!votePayload) {
+      throw new Error('Provide a valid vote JSON payload for /example vote.');
+    }
+
+    await handleKf2VotePayload(buildExampleVoteConfig(difficulty), votePayload);
+    await interaction.editReply({
+      content: `Processed example vote response for "${getDifficultyLabel(difficulty || getActiveDifficulties()[0] || 'normal')}".`,
+    });
+    return;
   }
 
   await postResponse(
