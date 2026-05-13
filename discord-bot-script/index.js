@@ -116,6 +116,7 @@ const {
 } = require('discord.js');
 
 const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'example'];
+const FORMAT_RESPONSE_ERROR_MESSAGE = 'Oh-oh: something went wrong with response from KF2 server. Please use "raw" option for detailed response.';
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
 const RANK_DISPLAY_ORDER = [
@@ -2080,7 +2081,7 @@ function formatPerkResponse(interaction, request, responsePayload) {
 
   const perkEntries = parsePerkEntries(responsePayload);
   if (perkEntries.length === 0) {
-    return responsePayload;
+    return null;
   }
 
   const entriesByKey = new Map(perkEntries.map((entry) => [entry.key, entry]));
@@ -2121,7 +2122,7 @@ function formatVipInfoResponse(request, responsePayload) {
   const target = request.requestedTarget || 'User';
   const vipInfo = parseVipInfo(responsePayload);
   if (!vipInfo) {
-    return `${target}: ${String(responsePayload).trim() || 'Empty server response'}`;
+    return null;
   }
 
   if (vipInfo.type.toLowerCase() === 'none' || vipInfo.daysLeft <= 0) {
@@ -2139,7 +2140,7 @@ function formatOverdrivesResponse(request, responsePayload) {
 
   const entries = parseOverdriveEntries(responsePayload);
   if (entries.length === 0) {
-    return responsePayload;
+    return null;
   }
 
   const total = entries.reduce((totals, entry) => ({
@@ -2200,7 +2201,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
 
   const info = parseInfoResponse(responsePayload);
   if (!info) {
-    return responsePayload;
+    return null;
   }
 
   const difficultyLabel = getDifficultyLabel(request.difficulty || 'server');
@@ -2387,7 +2388,7 @@ function formatRankResponse(request, responsePayload) {
 
   const rankEntries = parseRankEntries(responsePayload);
   if (rankEntries.length === 0) {
-    return responsePayload;
+    return null;
   }
 
   const longestLabelLength = RANK_DISPLAY_ORDER.reduce(
@@ -2443,6 +2444,10 @@ function formatResponse(interaction, request, responsePayload) {
 
   let formattedResponse = responsePayload;
   const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload) {
+    return prependRequestedTargetHeader(request, FORMAT_RESPONSE_ERROR_MESSAGE);
+  }
+
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
     if (request.commandName === 'vipinfo') {
       const target = request.requestedTarget || 'User';
@@ -2461,6 +2466,10 @@ function formatResponse(interaction, request, responsePayload) {
     formattedResponse = formatOverdrivesResponse(request, responsePayload);
   } else if (request.commandName === 'rank') {
     formattedResponse = formatRankResponse(request, responsePayload);
+  }
+
+  if (!formattedResponse) {
+    return prependRequestedTargetHeader(request, FORMAT_RESPONSE_ERROR_MESSAGE);
   }
 
   return prependRequestedTargetHeader(request, formattedResponse);
