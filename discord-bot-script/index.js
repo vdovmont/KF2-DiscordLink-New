@@ -1953,7 +1953,7 @@ function formatPerkResponse(interaction, request, responsePayload) {
   }
 
   const entriesByKey = new Map(perkEntries.map((entry) => [entry.key, entry]));
-  const lines = [request.requestedTarget || 'Player'];
+  const lines = [];
   const longestLabelLength = PERK_DISPLAY_ORDER.reduce(
     (maxLength, perk) => Math.max(maxLength, perk.label.length),
     0,
@@ -2234,7 +2234,7 @@ function formatRankResponse(request, responsePayload) {
     0,
   );
 
-  const lines = request.requestedTarget ? [request.requestedTarget] : [];
+  const lines = [];
 
   lines.push(...rankEntries.map((entry) => {
     const paddedLabel = entry.label.padEnd(longestLabelLength, ' ');
@@ -2255,37 +2255,40 @@ function formatRankResponse(request, responsePayload) {
   return lines.join('\n');
 }
 
-function formatResponse(interaction, request, responsePayload) {
-  if (request.raw) {
-    return responsePayload;
+function prependRequestedTargetHeader(request, responseText) {
+  if (!request.requestedTarget) {
+    return responseText;
   }
 
+  return `Information for ${request.requestedTarget}:\n${responseText}`;
+}
+
+function formatResponse(interaction, request, responsePayload) {
+  if (request.raw) {
+    return prependRequestedTargetHeader(request, responsePayload);
+  }
+
+  let formattedResponse = responsePayload;
   const parsedPayload = parseRelayJsonPayload(responsePayload);
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
     if (request.commandName === 'vipinfo') {
       const target = request.requestedTarget || 'User';
-      return `${target}: ${parsedPayload.error.trim()}`;
+      return prependRequestedTargetHeader(request, `${target}: ${parsedPayload.error.trim()}`);
     }
-    return parsedPayload.error.trim();
+    return prependRequestedTargetHeader(request, parsedPayload.error.trim());
   }
 
   if (request.commandName === 'perk') {
-    return formatPerkResponse(interaction, request, responsePayload);
+    formattedResponse = formatPerkResponse(interaction, request, responsePayload);
+  } else if (request.commandName === 'info') {
+    formattedResponse = formatInfoResponse(interaction, request, responsePayload);
+  } else if (request.commandName === 'vipinfo') {
+    formattedResponse = formatVipInfoResponse(request, responsePayload);
+  } else if (request.commandName === 'rank') {
+    formattedResponse = formatRankResponse(request, responsePayload);
   }
 
-  if (request.commandName === 'info') {
-    return formatInfoResponse(interaction, request, responsePayload);
-  }
-
-  if (request.commandName === 'vipinfo') {
-    return formatVipInfoResponse(request, responsePayload);
-  }
-
-  if (request.commandName === 'rank') {
-    return formatRankResponse(request, responsePayload);
-  }
-
-  return responsePayload;
+  return prependRequestedTargetHeader(request, formattedResponse);
 }
 
 function getInteractionUserMention(interaction) {
