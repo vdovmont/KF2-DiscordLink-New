@@ -29,8 +29,8 @@ let CDA_AVATAR_URL = initialRuntimeConfig.cdaAvatarUrl;
 let KF2_RECONNECT_DELAY_MS = initialRuntimeConfig.kf2ReconnectDelayMs;
 let KF2_CONNECT_TIMEOUT_MS = initialRuntimeConfig.kf2ConnectTimeoutMs;
 let KF2_REQUEST_TIMEOUT_MS = initialRuntimeConfig.kf2RequestTimeoutMs;
-let KF2_KICK_VOTE_DISCORD_CHANNEL_ID = initialRuntimeConfig.kf2KickVoteDiscordChannelId;
-let KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID = initialRuntimeConfig.kf2PauseSkipVoteDiscordChannelId;
+let KF2_KICK_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2KickVoteDiscordChannelIds;
+let KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2PauseSkipVoteDiscordChannelIds;
 let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
 let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
@@ -183,6 +183,13 @@ function parseRoleIds(value) {
     .filter(Boolean);
 }
 
+function parseChannelIds(value) {
+  return (value || '')
+    .split(',')
+    .map((channelId) => channelId.trim())
+    .filter(Boolean);
+}
+
 function parseChoice(value, choices, defaultValue) {
   const normalizedValue = String(value || defaultValue).trim().toLowerCase();
   return choices.includes(normalizedValue) ? normalizedValue : defaultValue;
@@ -194,8 +201,8 @@ function loadRuntimeConfig(env = process.env) {
     kf2ReconnectDelayMs: parseSecondsToMilliseconds(env.KF2_RECONNECT_DELAY_SECONDS, 30),
     kf2ConnectTimeoutMs: parseSecondsToMilliseconds(env.KF2_CONNECT_TIMEOUT_SECONDS, 5),
     kf2RequestTimeoutMs: parseSecondsToMilliseconds(env.KF2_REQUEST_TIMEOUT_SECONDS, 60),
-    kf2KickVoteDiscordChannelId: (env.KF2_KICK_VOTE_DISCORD_CHANNEL_ID || '').trim(),
-    kf2PauseSkipVoteDiscordChannelId: (env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID || '').trim(),
+    kf2KickVoteDiscordChannelIds: parseChannelIds(env.KF2_KICK_VOTE_DISCORD_CHANNEL_IDS),
+    kf2PauseSkipVoteDiscordChannelIds: parseChannelIds(env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS),
     kf2VoteTimeoutMs: parseSecondsToMilliseconds(env.KF2_VOTE_TIMEOUT_SECONDS, 30),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
@@ -213,8 +220,8 @@ function applyRuntimeConfig(config) {
   KF2_RECONNECT_DELAY_MS = config.kf2ReconnectDelayMs;
   KF2_CONNECT_TIMEOUT_MS = config.kf2ConnectTimeoutMs;
   KF2_REQUEST_TIMEOUT_MS = config.kf2RequestTimeoutMs;
-  KF2_KICK_VOTE_DISCORD_CHANNEL_ID = config.kf2KickVoteDiscordChannelId;
-  KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID = config.kf2PauseSkipVoteDiscordChannelId;
+  KF2_KICK_VOTE_DISCORD_CHANNEL_IDS = config.kf2KickVoteDiscordChannelIds;
+  KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = config.kf2PauseSkipVoteDiscordChannelIds;
   KF2_VOTE_TIMEOUT_MS = config.kf2VoteTimeoutMs;
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
   SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
@@ -329,9 +336,9 @@ function readServerConfig(index, env = process.env) {
     difficulty,
     host: env[`${prefix}HOST`] || '127.0.0.1',
     port,
-    channelId: (env[`${prefix}DISCORD_CHANNEL_ID`] || '').trim(),
-    kickVoteChannelId: (env[`${prefix}KICK_VOTE_DISCORD_CHANNEL_ID`] || env.KF2_KICK_VOTE_DISCORD_CHANNEL_ID || '').trim(),
-    pauseSkipVoteChannelId: (env[`${prefix}PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID`] || env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID || '').trim(),
+    channelIds: parseChannelIds(env[`${prefix}DISCORD_CHANNEL_IDS`]),
+    kickVoteChannelIds: parseChannelIds(env[`${prefix}KICK_VOTE_DISCORD_CHANNEL_IDS`]),
+    pauseSkipVoteChannelIds: parseChannelIds(env[`${prefix}PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS`]),
     webhookUrl: (env[`${prefix}WEBHOOK_URL`] || '').trim(),
     forwardKf2ToDiscord: parseBoolean(env[`${prefix}FORWARD_KF2_TO_DISCORD`], true),
     forwardDiscordToKf2: parseBoolean(env[`${prefix}FORWARD_DISCORD_TO_KF2`], true),
@@ -1119,7 +1126,7 @@ async function sendWebhookMessage(webhookUrl, payload) {
 }
 
 async function forwardKf2ChatToDiscord(config, chatMessage) {
-  if (!config.forwardKf2ToDiscord || !config.channelId) {
+  if (!config.forwardKf2ToDiscord || config.channelIds.length === 0) {
     return;
   }
 
@@ -1139,13 +1146,19 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
       return;
     }
 
-    const channel = await client.channels.fetch(config.channelId);
-    if (!channel || typeof channel.send !== 'function') {
-      logWarn(`Cannot find Discord channel ${config.channelId} for ${config.name}.`);
-      return;
-    }
+    for (const channelId of config.channelIds) {
+      try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || typeof channel.send !== 'function') {
+          logWarn(`Cannot find Discord channel ${channelId} for ${config.name}.`);
+          continue;
+        }
 
-    await channel.send(`[${config.name}] ${chatMessage.username}: ${chatMessage.content}`);
+        await channel.send(`[${config.name}] ${chatMessage.username}: ${chatMessage.content}`);
+      } catch (error) {
+        logWarn(`Failed to forward KF2 chat from ${config.name} to Discord channel ${channelId}: ${error.message || error}`);
+      }
+    }
   } catch (error) {
     logWarn(`Failed to forward KF2 chat from ${config.name} to Discord: ${error.message || error}`);
   }
@@ -1200,12 +1213,16 @@ function buildVoteHeader(state) {
   return `${difficultyLabel} - ${state.initiator} initiated ${state.subtype} vote:`;
 }
 
-function getVoteChannelId(config, subtype) {
+function getVoteChannelIds(config, subtype) {
   if (subtype === 'kick') {
-    return config.kickVoteChannelId || KF2_KICK_VOTE_DISCORD_CHANNEL_ID;
+    return config.kickVoteChannelIds.length > 0
+      ? config.kickVoteChannelIds
+      : KF2_KICK_VOTE_DISCORD_CHANNEL_IDS;
   }
 
-  return config.pauseSkipVoteChannelId || KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID;
+  return config.pauseSkipVoteChannelIds.length > 0
+    ? config.pauseSkipVoteChannelIds
+    : KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS;
 }
 
 function formatVoteMessage(state) {
@@ -1230,12 +1247,14 @@ function formatVoteMessage(state) {
 }
 
 function queueVoteMessageEdit(state) {
-  if (!state.message || typeof state.message.edit !== 'function') {
+  if (!Array.isArray(state.messages) || state.messages.length === 0) {
     return;
   }
 
   state.editPromise = (state.editPromise || Promise.resolve())
-    .then(() => state.message.edit(formatVoteMessage(state)))
+    .then(() => Promise.all(state.messages
+      .filter((message) => message && typeof message.edit === 'function')
+      .map((message) => message.edit(formatVoteMessage(state)))))
     .catch((error) => {
       logWarnConfig(`Failed to edit vote message for "${state.difficulty}": ${error.message || error}`);
     });
@@ -1272,7 +1291,7 @@ async function startVoteState(config, payload) {
     players: [],
     votes: new Map(),
     result: null,
-    message: null,
+    messages: [],
     timeout: null,
     editPromise: Promise.resolve(),
   };
@@ -1293,24 +1312,33 @@ async function startVoteState(config, payload) {
 
   activeVotes.set(difficulty, state);
 
-  const channelId = getVoteChannelId(config, payload.subtype);
-  if (!channelId) {
+  const channelIds = getVoteChannelIds(config, payload.subtype);
+  if (channelIds.length === 0) {
     const channelConfigName = payload.subtype === 'kick'
-      ? `KF2_SERVER_${config.index}_KICK_VOTE_DISCORD_CHANNEL_ID or KF2_KICK_VOTE_DISCORD_CHANNEL_ID`
-      : `KF2_SERVER_${config.index}_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID or KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID`;
+      ? `KF2_SERVER_${config.index}_KICK_VOTE_DISCORD_CHANNEL_IDS or KF2_KICK_VOTE_DISCORD_CHANNEL_IDS`
+      : `KF2_SERVER_${config.index}_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS or KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS`;
     logWarnConfig(`Cannot post vote message for "${config.name}"; set ${channelConfigName}.`);
     return;
   }
 
   try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel || typeof channel.send !== 'function') {
-      logWarnConfig(`Cannot find vote Discord channel ${channelId} for ${config.name}.`);
-      return;
+    for (const channelId of channelIds) {
+      try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || typeof channel.send !== 'function') {
+          logWarnConfig(`Cannot find vote Discord channel ${channelId} for ${config.name}.`);
+          continue;
+        }
+
+        state.messages.push(await channel.send(formatVoteMessage(state)));
+      } catch (error) {
+        logWarnConfig(`Failed to post vote message for ${config.name} to channel ${channelId}: ${error.message || error}`);
+      }
     }
 
-    state.message = await channel.send(formatVoteMessage(state));
-    queueVoteMessageEdit(state);
+    if (state.messages.length > 0) {
+      queueVoteMessageEdit(state);
+    }
   } catch (error) {
     logWarnConfig(`Failed to post vote message for ${config.name}: ${error.message || error}`);
   }
@@ -2380,8 +2408,8 @@ function buildExampleVoteConfig(difficulty) {
     index: 'example',
     name: getDifficultyLabel(selectedDifficulty),
     difficulty: selectedDifficulty,
-    kickVoteChannelId: KF2_KICK_VOTE_DISCORD_CHANNEL_ID,
-    pauseSkipVoteChannelId: KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID,
+    kickVoteChannelIds: KF2_KICK_VOTE_DISCORD_CHANNEL_IDS,
+    pauseSkipVoteChannelIds: KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS,
   };
 }
 
@@ -2532,7 +2560,7 @@ client.on(Events.MessageCreate, async (message) => {
 
   const matchingConnections = kf2Connections.filter((connection) =>
     connection.config.forwardDiscordToKf2
-    && connection.config.channelId === message.channelId,
+    && connection.config.channelIds.includes(message.channelId),
   );
 
   if (matchingConnections.length === 0) {

@@ -86,11 +86,13 @@ For each KF2 server block in `.env`:
 
 - `KF2_SERVER_N_ENABLED` turns that server connection on or off.
 - `KF2_SERVER_N_HOST` and `KF2_SERVER_N_PORT` point to the same KF2 socket port the Java relay used before.
-- `KF2_SERVER_N_DISCORD_CHANNEL_ID` is the Discord channel used for chat forwarding.
+- `KF2_SERVER_N_DISCORD_CHANNEL_IDS` is the Discord channel list used for chat forwarding. Use commas for multiple channels.
 - `KF2_SERVER_N_WEBHOOK_URL` is optional. If set, KF2 messages are posted through that webhook with player names and avatars. If empty, the bot posts plain text messages.
 - `KF2_SERVER_N_FORWARD_KF2_TO_DISCORD` controls KF2 chat to Discord.
 - `KF2_SERVER_N_FORWARD_DISCORD_TO_KF2` controls Discord chat to KF2.
 - `KF2_SERVER_N_COMMANDS_ENABLED` controls whether slash commands can use that connected server.
+
+Timeout and delay settings that end in `_SECONDS` use seconds in `.env`. Settings that end in `_CHANNEL_IDS` accept one channel ID or a comma-separated list of channel IDs.
 
 Slash command cooldown settings:
 
