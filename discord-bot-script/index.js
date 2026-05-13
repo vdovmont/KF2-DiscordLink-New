@@ -115,7 +115,7 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 
-const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'rank', 'example'];
+const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'example'];
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
 const RANK_DISPLAY_ORDER = [
@@ -137,6 +137,14 @@ const PERK_DISPLAY_ORDER = [
   { key: 'swat', label: 'SWAT', emojiName: 'KFSWAT', aliases: ['swat'] },
   { key: 'engineer', label: 'Engineer', emojiName: 'KFEngy', aliases: ['engineer'] },
   { key: 'survivalist', label: 'Survivalist', emojiName: 'KFSurv', aliases: ['survivalist'] },
+];
+const OVERDRIVE_DISPLAY_ORDER = [
+  { key: 'unstable', label: 'Unstable', emoji: '⬜', aliases: ['unstable'] },
+  { key: 'balanced', label: 'Balanced', emoji: '🟩', aliases: ['balanced'] },
+  { key: 'good', label: 'Good', emoji: '🟦', aliases: ['good'] },
+  { key: 'special', label: 'Special', emoji: '🟪', aliases: ['special'] },
+  { key: 'epic', label: 'Epic', emoji: '🟥', aliases: ['epic'] },
+  { key: 'legendary', label: 'Legendary', emoji: '🟨', aliases: ['legendary'] },
 ];
 let activeRelayMap = new Map();
 let activeDifficulties = [];
@@ -864,6 +872,21 @@ const commandDefinitions = [
         .setDescription('Steam ID64')
         .setRequired(false),
     ))),
+  addRawOption(addHiddenOption(new SlashCommandBuilder()
+    .setName('overdrives')
+    .setDescription('Send an overdrives request to the first connected KF2 server')
+    .addStringOption((option) =>
+      option
+        .setName('nickname')
+        .setDescription('Discord nickname or Steam nickname')
+        .setRequired(false),
+    )
+    .addStringOption((option) =>
+      option
+        .setName('steamid')
+        .setDescription('Steam ID64')
+        .setRequired(false),
+    ))),
   addRawOption(addHiddenOption(addDifficultyOptionWithRequired(
     new SlashCommandBuilder()
       .setName('rank')
@@ -895,6 +918,7 @@ const commandDefinitions = [
             { name: 'info', value: 'info' },
             { name: 'perk', value: 'perk' },
             { name: 'vipinfo', value: 'vipinfo' },
+            { name: 'overdrives', value: 'overdrives' },
             { name: 'rank', value: 'rank' },
             { name: 'vote', value: 'vote' },
           ),
@@ -1716,6 +1740,40 @@ function buildRelayRequest(interaction) {
     };
   }
 
+  if (commandName === 'overdrives') {
+    const relay = getDefaultRelay();
+
+    if (!relay) {
+      throw new Error('No active difficulties are available right now.');
+    }
+
+    const nickname = interaction.options.getString('nickname');
+    const steamId = interaction.options.getString('steamid');
+
+    if (!nickname && !steamId) {
+      throw new Error('Provide either nickname or steamid for /overdrives.');
+    }
+
+    if (nickname && steamId) {
+      throw new Error('Use either nickname or steamid for /overdrives, not both.');
+    }
+
+    if (steamId && !isValidSteamId64(steamId)) {
+      throw new Error('Invalid steamid. Provide a valid SteamID64.');
+    }
+
+    return {
+      commandName,
+      difficulty: relay.difficulty,
+      requestedTarget: nickname ? nickname.trim() : steamId.trim(),
+      payload: nickname
+        ? `/dsrequest overdrives nickname:${nickname.trim()}`
+        : `/dsrequest overdrives steamid:${steamId.trim()}`,
+      hidden,
+      raw,
+    };
+  }
+
   const selectedDifficulty = interaction.options.getString('difficulty');
   const nickname = interaction.options.getString('nickname');
   const steamId = interaction.options.getString('steamid');
@@ -1851,6 +1909,79 @@ function parseVipInfo(responsePayload) {
     type: vipType,
     daysLeft,
   };
+}
+
+function resolveOverdriveDefinition(value) {
+  const normalizedValue = String(value || '').trim().toLowerCase();
+  return OVERDRIVE_DISPLAY_ORDER.find((overdrive) =>
+    overdrive.aliases.includes(normalizedValue),
+  ) || null;
+}
+
+function normalizeOverdriveValue(value) {
+  if (Array.isArray(value)) {
+    return normalizeOverdriveValue(value.find((item) => item && typeof item === 'object'));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const max = Number.parseInt(value.max, 10);
+  const current = Number.parseInt(value.current, 10);
+
+  if (Number.isNaN(max) || Number.isNaN(current)) {
+    return null;
+  }
+
+  return {
+    max,
+    current,
+  };
+}
+
+function parseOverdriveEntries(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload) {
+    return [];
+  }
+
+  const rawOverdrives = parsedPayload.overdrives;
+  const entriesByKey = new Map();
+
+  if (Array.isArray(rawOverdrives)) {
+    for (const rawEntry of rawOverdrives) {
+      if (!rawEntry || typeof rawEntry !== 'object') {
+        continue;
+      }
+
+      for (const [rawKey, rawValue] of Object.entries(rawEntry)) {
+        const definition = resolveOverdriveDefinition(rawKey);
+        const value = normalizeOverdriveValue(rawValue);
+        if (definition && value) {
+          entriesByKey.set(definition.key, {
+            ...definition,
+            ...value,
+          });
+        }
+      }
+    }
+  } else if (rawOverdrives && typeof rawOverdrives === 'object') {
+    for (const [rawKey, rawValue] of Object.entries(rawOverdrives)) {
+      const definition = resolveOverdriveDefinition(rawKey);
+      const value = normalizeOverdriveValue(rawValue);
+      if (definition && value) {
+        entriesByKey.set(definition.key, {
+          ...definition,
+          ...value,
+        });
+      }
+    }
+  }
+
+  return OVERDRIVE_DISPLAY_ORDER
+    .map((overdrive) => entriesByKey.get(overdrive.key))
+    .filter(Boolean);
 }
 
 function parseRankEntries(responsePayload) {
@@ -1999,6 +2130,48 @@ function formatVipInfoResponse(request, responsePayload) {
 
   const dayLabel = vipInfo.daysLeft === 1 ? 'day' : 'days';
   return `${target} has ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
+}
+
+function formatOverdrivesResponse(request, responsePayload) {
+  if (request.commandName !== 'overdrives') {
+    return responsePayload;
+  }
+
+  const entries = parseOverdriveEntries(responsePayload);
+  if (entries.length === 0) {
+    return responsePayload;
+  }
+
+  const total = entries.reduce((totals, entry) => ({
+    current: totals.current + entry.current,
+    max: totals.max + entry.max,
+  }), { current: 0, max: 0 });
+  const labelWidth = Math.max(
+    getDiscordTextWidth('🚩 Total'),
+    ...entries.map((entry) => getDiscordTextWidth(`${entry.emoji} ${entry.label}`)),
+  );
+  const currentWidth = Math.max(
+    String(total.current).length,
+    ...entries.map((entry) => String(entry.current).length),
+  );
+  const maxWidth = Math.max(
+    String(total.max).length,
+    ...entries.map((entry) => String(entry.max).length),
+  );
+  const formatRow = (label, current, max) =>
+    `${padEndByDiscordTextWidth(label, labelWidth)}: ${String(current).padStart(currentWidth)} / ${String(max).padStart(maxWidth)}`;
+  const rowWidth = getDiscordTextWidth(formatRow('✅ Total', total.current, total.max));
+  const title = 'Overdrives';
+  const titlePadding = Math.max(0, Math.floor((rowWidth - getDiscordTextWidth(title)) / 2));
+  const titleLine = padEndByDiscordTextWidth(`${' '.repeat(titlePadding)}${title}`, rowWidth);
+  const lines = entries.map((entry) => formatRow(`${entry.emoji} ${entry.label}`, entry.current, entry.max));
+
+  lines.unshift(titleLine);
+  lines.push('', formatRow('🚩 Total', total.current, total.max));
+
+  return lines
+    .map((line) => (line ? `\`${line}\`` : ''))
+    .join('\n');
 }
 
 function formatWaveTypeLabel(waveType) {
@@ -2284,6 +2457,8 @@ function formatResponse(interaction, request, responsePayload) {
     formattedResponse = formatInfoResponse(interaction, request, responsePayload);
   } else if (request.commandName === 'vipinfo') {
     formattedResponse = formatVipInfoResponse(request, responsePayload);
+  } else if (request.commandName === 'overdrives') {
+    formattedResponse = formatOverdrivesResponse(request, responsePayload);
   } else if (request.commandName === 'rank') {
     formattedResponse = formatRankResponse(request, responsePayload);
   }
