@@ -148,6 +148,7 @@ let envReloadTimer = null;
 let commandTokenState = new Map();
 let commandTokenResetTimer = null;
 let commandTokenRestartAnchorMs = Date.now();
+let envFileSnapshot = null;
 
 function parseBoolean(value, defaultValue = false) {
   if (value === undefined || value === null || value === '') {
@@ -221,10 +222,78 @@ function applyRuntimeConfig(config) {
 }
 
 function isReloadableEnvKey(key) {
-  return key === 'CDA_AVATAR_URL'
-    || key === 'SPECIAL_ACCESS_ROLE_IDS'
-    || key.startsWith('COMMAND_')
-    || /^KF2_/.test(key);
+  return !isStartupOnlyEnvKey(key);
+}
+
+function isStartupOnlyEnvKey(key) {
+  return [
+    'DISCORD_TOKEN',
+    'CLIENT_ID',
+    'GUILD_ID',
+    'STEAM_API_KEY',
+  ].includes(key);
+}
+
+function getEnvSnapshot(env) {
+  return Object.fromEntries(Object.entries(env));
+}
+
+function maskEnvValueForLog(value) {
+  const text = String(value);
+  if (text.length <= 8) {
+    return '<set>';
+  }
+
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
+function formatEnvValueForLog(key, value) {
+  if (value === undefined) {
+    return '<unset>';
+  }
+
+  if (value === '') {
+    return '<empty>';
+  }
+
+  if (isStartupOnlyEnvKey(key)) {
+    return JSON.stringify(maskEnvValueForLog(value));
+  }
+
+  return JSON.stringify(String(value));
+}
+
+function logReloadedEnvChanges(previousSnapshot, nextSnapshot) {
+  const keys = new Set([
+    ...Object.keys(previousSnapshot || {}),
+    ...Object.keys(nextSnapshot || {}),
+  ]);
+  const changedKeys = [...keys]
+    .filter((key) => previousSnapshot?.[key] !== nextSnapshot?.[key])
+    .sort((left, right) => left.localeCompare(right));
+
+  if (changedKeys.length === 0) {
+    logInfo(`Reloaded runtime config from ${ENV_FILE_PATH}; no settings changed.`);
+    return;
+  }
+
+  logInfo(`Reloaded runtime config from ${ENV_FILE_PATH}; changed settings:`);
+
+  for (const key of changedKeys) {
+    const startupOnlyNote = isStartupOnlyEnvKey(key) ? ' (restart required; not applied)' : '';
+    logInfo(
+      `  ${key}${startupOnlyNote}: ${formatEnvValueForLog(key, previousSnapshot?.[key])} -> ${formatEnvValueForLog(key, nextSnapshot?.[key])}`,
+    );
+  }
+}
+
+function readEnvSnapshotFromFile() {
+  if (!dotenv || !fs.existsSync(ENV_FILE_PATH)) {
+    return {};
+  }
+
+  const parsedEnv = dotenv.parse(fs.readFileSync(ENV_FILE_PATH, 'utf8'));
+  return getEnvSnapshot(parsedEnv);
 }
 
 function readServerConfig(index, env = process.env) {
@@ -366,6 +435,12 @@ function readEnvFileForRuntimeConfigs() {
     }
   }
 
+  for (const key of Object.keys(parsedEnv)) {
+    if (!isReloadableEnvKey(key)) {
+      delete parsedEnv[key];
+    }
+  }
+
   return {
     ...configEnv,
     ...parsedEnv,
@@ -374,11 +449,13 @@ function readEnvFileForRuntimeConfigs() {
 
 function reloadRuntimeConfigsFromEnvFile() {
   try {
+    const nextEnvFileSnapshot = readEnvSnapshotFromFile();
     const env = readEnvFileForRuntimeConfigs();
     applyRuntimeConfig(loadRuntimeConfig(env));
     const serverConfigs = loadServerConfigs(env);
     applyServerConfigs(serverConfigs);
-    logInfo(`Reloaded runtime config from ${ENV_FILE_PATH}`);
+    logReloadedEnvChanges(envFileSnapshot, nextEnvFileSnapshot);
+    envFileSnapshot = nextEnvFileSnapshot;
   } catch (error) {
     logError(`Failed to reload runtime config: ${error.message || error}`);
   }
@@ -2529,6 +2606,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
+envFileSnapshot = readEnvSnapshotFromFile();
 loadCommandTokenState();
 scheduleCommandTokenReset();
 

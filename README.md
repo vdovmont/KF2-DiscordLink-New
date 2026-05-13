@@ -105,7 +105,8 @@ Normal slash commands spend public tokens. Commands with `hidden=true` spend pri
 
 The bot needs the `MESSAGE CONTENT INTENT` enabled in the Discord Developer Portal if you want Discord channel messages forwarded back to KF2.
 
-While the bot is running, any changes to the options settings in `discord-bot-script/.env` are reloaded automatically (except key ones: DISCORD_TOKEN, CLIENT_ID, GUILD_ID and STEAM_API_KEY). Changing a server host or port restarts only that KF2 socket connection. Discord token, client ID, guild ID, and steam_api key still require restarting the bot.
+While the bot is running, changes to settings in `discord-bot-script/.env` are reloaded automatically except `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID`, and `STEAM_API_KEY`. Changing a server host or port restarts only that KF2 socket connection. Discord token, client ID, guild ID, and Steam API key changes still require restarting the bot.
+When `.env` is reloaded, the bot logs each changed setting with its previous and new value. Startup-only settings are logged as not applied and require a restart.
 
 ## 4. Run the bot
 
