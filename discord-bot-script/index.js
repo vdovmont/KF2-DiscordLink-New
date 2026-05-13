@@ -16,6 +16,7 @@ const stringWidthModule = require('string-width');
 const stringWidth = stringWidthModule.default || stringWidthModule;
 
 const ENV_FILE_PATH = path.resolve(__dirname, '.env');
+const USER_TOKENS_FILE_PATH = path.resolve(__dirname, 'user_tokens.json');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -33,6 +34,12 @@ let KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID = initialRuntimeConfig.kf2PauseSkipVo
 let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
 let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
+let COMMAND_PUBLIC_TOKEN_LIMIT = initialRuntimeConfig.commandPublicTokenLimit;
+let COMMAND_PRIVATE_TOKEN_LIMIT = initialRuntimeConfig.commandPrivateTokenLimit;
+let COMMAND_TOKEN_RESET_SECONDS = initialRuntimeConfig.commandTokenResetSeconds;
+let COMMAND_TOKEN_RESET_ANCHOR = initialRuntimeConfig.commandTokenResetAnchor;
+let COMMAND_COOLDOWN_ROLE_MODE = initialRuntimeConfig.commandCooldownRoleMode;
+let COMMAND_COOLDOWN_ROLE_IDS = initialRuntimeConfig.commandCooldownRoleIds;
 
 function formatLogTimestamp(date = new Date()) {
   const year = date.getFullYear();
@@ -138,6 +145,9 @@ const processingDifficulties = new Set();
 const kf2Connections = [];
 const activeVotes = new Map();
 let envReloadTimer = null;
+let commandTokenState = new Map();
+let commandTokenResetTimer = null;
+let commandTokenRestartAnchorMs = Date.now();
 
 function parseBoolean(value, defaultValue = false) {
   if (value === undefined || value === null || value === '') {
@@ -152,11 +162,21 @@ function parseInteger(value, defaultValue) {
   return Number.isInteger(parsedValue) ? parsedValue : defaultValue;
 }
 
+function parsePositiveInteger(value, defaultValue) {
+  const parsedValue = parseInteger(value, defaultValue);
+  return parsedValue > 0 ? parsedValue : defaultValue;
+}
+
 function parseRoleIds(value) {
   return (value || '')
     .split(',')
     .map((roleId) => roleId.trim())
     .filter(Boolean);
+}
+
+function parseChoice(value, choices, defaultValue) {
+  const normalizedValue = String(value || defaultValue).trim().toLowerCase();
+  return choices.includes(normalizedValue) ? normalizedValue : defaultValue;
 }
 
 function loadRuntimeConfig(env = process.env) {
@@ -170,6 +190,12 @@ function loadRuntimeConfig(env = process.env) {
     kf2VoteTimeoutMs: parseInteger(env.KF2_VOTE_TIMEOUT_MS, 30000),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
+    commandPublicTokenLimit: parsePositiveInteger(env.COMMAND_PUBLIC_TOKEN_LIMIT, 5),
+    commandPrivateTokenLimit: parsePositiveInteger(env.COMMAND_PRIVATE_TOKEN_LIMIT, 10),
+    commandTokenResetSeconds: parsePositiveInteger(env.COMMAND_TOKEN_RESET_SECONDS, 600),
+    commandTokenResetAnchor: parseChoice(env.COMMAND_TOKEN_RESET_ANCHOR, ['restart', 'day'], 'day'),
+    commandCooldownRoleMode: parseChoice(env.COMMAND_COOLDOWN_ROLE_MODE, ['blacklist', 'whitelist'], 'blacklist'),
+    commandCooldownRoleIds: parseRoleIds(env.COMMAND_COOLDOWN_ROLE_IDS),
   };
 }
 
@@ -183,11 +209,21 @@ function applyRuntimeConfig(config) {
   KF2_VOTE_TIMEOUT_MS = config.kf2VoteTimeoutMs;
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
   SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
+  COMMAND_PUBLIC_TOKEN_LIMIT = config.commandPublicTokenLimit;
+  COMMAND_PRIVATE_TOKEN_LIMIT = config.commandPrivateTokenLimit;
+  COMMAND_TOKEN_RESET_SECONDS = config.commandTokenResetSeconds;
+  COMMAND_TOKEN_RESET_ANCHOR = config.commandTokenResetAnchor;
+  COMMAND_COOLDOWN_ROLE_MODE = config.commandCooldownRoleMode;
+  COMMAND_COOLDOWN_ROLE_IDS = config.commandCooldownRoleIds;
+  pruneCommandTokenState();
+  saveCommandTokenState();
+  scheduleCommandTokenReset();
 }
 
 function isReloadableEnvKey(key) {
   return key === 'CDA_AVATAR_URL'
     || key === 'SPECIAL_ACCESS_ROLE_IDS'
+    || key.startsWith('COMMAND_')
     || /^KF2_/.test(key);
 }
 
@@ -428,6 +464,220 @@ function hasAnyAllowedRole(interaction, allowedRoleIds) {
   }
 
   return false;
+}
+
+function getCommandTokenPeriodMs() {
+  return COMMAND_TOKEN_RESET_SECONDS * 1000;
+}
+
+function getLocalDayStartMs(nowMs = Date.now()) {
+  const now = new Date(nowMs);
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+function getCommandTokenWindowStartMs(nowMs = Date.now()) {
+  const periodMs = getCommandTokenPeriodMs();
+  const anchorMs = COMMAND_TOKEN_RESET_ANCHOR === 'day'
+    ? getLocalDayStartMs(nowMs)
+    : commandTokenRestartAnchorMs;
+
+  if (nowMs <= anchorMs) {
+    return anchorMs;
+  }
+
+  return anchorMs + Math.floor((nowMs - anchorMs) / periodMs) * periodMs;
+}
+
+function getNextCommandTokenResetMs(nowMs = Date.now()) {
+  return getCommandTokenWindowStartMs(nowMs) + getCommandTokenPeriodMs();
+}
+
+function normalizeTokenRecord(record, currentWindowStartMs) {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+
+  const userId = String(record.userId || '').trim();
+  const timestampMs = Number.parseInt(record.epochTimestampMs ?? record.timestampMs, 10);
+
+  if (!userId || !Number.isFinite(timestampMs) || timestampMs < currentWindowStartMs) {
+    return null;
+  }
+
+  return {
+    userId,
+    username: String(record.username || 'Unknown'),
+    timestampMs,
+    publicSpent: Math.max(0, Number.parseInt(record.publicSpent, 10) || 0),
+    privateSpent: Math.max(0, Number.parseInt(record.privateSpent, 10) || 0),
+  };
+}
+
+function loadCommandTokenState() {
+  const currentWindowStartMs = getCommandTokenWindowStartMs();
+  commandTokenState = new Map();
+
+  if (!fs.existsSync(USER_TOKENS_FILE_PATH)) {
+    return;
+  }
+
+  try {
+    const rawState = fs.readFileSync(USER_TOKENS_FILE_PATH, 'utf8').trim();
+    const parsedState = rawState ? JSON.parse(rawState) : {};
+    const records = Array.isArray(parsedState)
+      ? parsedState
+      : Array.isArray(parsedState.users) ? parsedState.users : [];
+
+    for (const record of records) {
+      const normalizedRecord = normalizeTokenRecord(record, currentWindowStartMs);
+      if (normalizedRecord) {
+        commandTokenState.set(normalizedRecord.userId, normalizedRecord);
+      }
+    }
+  } catch (error) {
+    logWarn(`Failed to load ${USER_TOKENS_FILE_PATH}; starting with empty command token state: ${error.message || error}`);
+    commandTokenState = new Map();
+  }
+
+  saveCommandTokenState();
+}
+
+function saveCommandTokenState() {
+  const users = [...commandTokenState.values()]
+    .sort((left, right) => left.userId.localeCompare(right.userId))
+    .map((record) => ({
+      userId: record.userId,
+      username: record.username,
+      epochTimestampMs: record.timestampMs,
+      publicSpent: record.publicSpent,
+      privateSpent: record.privateSpent,
+    }));
+
+  if (users.length === 0 && !fs.existsSync(USER_TOKENS_FILE_PATH)) {
+    return;
+  }
+
+  fs.writeFileSync(
+    USER_TOKENS_FILE_PATH,
+    `${JSON.stringify({ users }, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+function pruneCommandTokenState() {
+  const currentWindowStartMs = getCommandTokenWindowStartMs();
+
+  for (const [userId, record] of commandTokenState.entries()) {
+    if (!normalizeTokenRecord(record, currentWindowStartMs)) {
+      commandTokenState.delete(userId);
+    }
+  }
+}
+
+function resetCommandTokenState() {
+  commandTokenState.clear();
+  saveCommandTokenState();
+}
+
+function scheduleCommandTokenReset() {
+  if (commandTokenResetTimer) {
+    clearTimeout(commandTokenResetTimer);
+  }
+
+  const delayMs = Math.max(1000, getNextCommandTokenResetMs() - Date.now());
+  commandTokenResetTimer = setTimeout(() => {
+    resetCommandTokenState();
+    scheduleCommandTokenReset();
+  }, delayMs);
+}
+
+function getCommandTokenUsername(interaction) {
+  const displayName = getMemberNickname(interaction);
+  const username = interaction.user?.tag || interaction.user?.username || displayName;
+  return displayName && displayName !== username ? `${displayName} (${username})` : username;
+}
+
+function isCommandCooldownEnabledForMember(interaction) {
+  const hasConfiguredRole = hasAnyAllowedRole(interaction, COMMAND_COOLDOWN_ROLE_IDS);
+
+  if (COMMAND_COOLDOWN_ROLE_MODE === 'whitelist') {
+    return hasConfiguredRole;
+  }
+
+  return !hasConfiguredRole;
+}
+
+function resolveCommandTokenResult(interaction, requestedHidden, consume) {
+  if (!isCommandCooldownEnabledForMember(interaction)) {
+    return {
+      allowed: true,
+      hidden: requestedHidden,
+    };
+  }
+
+  pruneCommandTokenState();
+
+  const userId = interaction.user?.id;
+  if (!userId) {
+    return {
+      allowed: false,
+      message: 'You reached command use limit. Please wait a bit until you can use commands again.',
+    };
+  }
+
+  const currentWindowStartMs = getCommandTokenWindowStartMs();
+  const record = commandTokenState.get(userId) || {
+    userId,
+    username: getCommandTokenUsername(interaction),
+    timestampMs: currentWindowStartMs,
+    publicSpent: 0,
+    privateSpent: 0,
+  };
+
+  record.username = getCommandTokenUsername(interaction);
+  record.timestampMs = currentWindowStartMs;
+
+  let tokenType = requestedHidden ? 'private' : 'public';
+  let hidden = requestedHidden;
+
+  if (tokenType === 'public' && record.publicSpent >= COMMAND_PUBLIC_TOKEN_LIMIT) {
+    tokenType = 'private';
+    hidden = true;
+  }
+
+  const spentKey = tokenType === 'public' ? 'publicSpent' : 'privateSpent';
+  const limit = tokenType === 'public' ? COMMAND_PUBLIC_TOKEN_LIMIT : COMMAND_PRIVATE_TOKEN_LIMIT;
+
+  if (record[spentKey] >= limit) {
+    return {
+      allowed: false,
+      message: 'You reached command use limit. Please wait a bit until you can use commands again.',
+    };
+  }
+
+  if (!consume) {
+    return {
+      allowed: true,
+      hidden,
+    };
+  }
+
+  record[spentKey] += 1;
+  commandTokenState.set(userId, record);
+  saveCommandTokenState();
+
+  return {
+    allowed: true,
+    hidden,
+  };
+}
+
+function checkCommandTokenAvailability(interaction, requestedHidden) {
+  return resolveCommandTokenResult(interaction, requestedHidden, false);
+}
+
+function consumeCommandToken(interaction, requestedHidden) {
+  return resolveCommandTokenResult(interaction, requestedHidden, true);
 }
 
 function resolveRawOption(interaction) {
@@ -2021,7 +2271,7 @@ function buildExampleVoteConfig(difficulty) {
   };
 }
 
-async function handleExampleCommand(interaction) {
+function buildExampleRequest(interaction) {
   ensureExampleAccess(interaction);
 
   const commandName = interaction.options.getString('command', true);
@@ -2041,9 +2291,31 @@ async function handleExampleCommand(interaction) {
       throw new Error('Provide a valid vote JSON payload for /example vote.');
     }
 
-    await handleKf2VotePayload(buildExampleVoteConfig(difficulty), votePayload);
+    return {
+      commandName,
+      difficulty,
+      responsePayload,
+      hidden,
+      raw,
+      votePayload,
+    };
+  }
+
+  return {
+    commandName,
+    difficulty,
+    requestedTarget,
+    responsePayload,
+    hidden,
+    raw,
+  };
+}
+
+async function handleExampleCommand(interaction, request) {
+  if (request.commandName === 'vote') {
+    await handleKf2VotePayload(buildExampleVoteConfig(request.difficulty), request.votePayload);
     await interaction.editReply({
-      content: `Processed example vote response for "${getDifficultyLabel(difficulty || getActiveDifficulties()[0] || 'normal')}".`,
+      content: `Processed example vote response for "${getDifficultyLabel(request.difficulty || getActiveDifficulties()[0] || 'normal')}".`,
     });
     return;
   }
@@ -2051,14 +2323,14 @@ async function handleExampleCommand(interaction) {
   await postResponse(
     interaction,
     {
-      commandName,
-      difficulty,
-      requestedTarget,
-      hidden,
-      raw,
+      commandName: request.commandName,
+      difficulty: request.difficulty,
+      requestedTarget: request.requestedTarget,
+      hidden: request.hidden,
+      raw: request.raw,
     },
-    responsePayload,
-    `Posted example response for "/${commandName}".`,
+    request.responsePayload,
+    `Posted example response for "/${request.commandName}".`,
   );
 }
 
@@ -2188,11 +2460,48 @@ client.on(Events.InteractionCreate, async (interaction) => {
     });
 
     if (interaction.commandName === 'example') {
-      await handleExampleCommand(interaction);
+      const requestedHidden = interaction.options.getBoolean('hidden') || false;
+      const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
+      if (!availabilityResult.allowed) {
+        await interaction.editReply({
+          content: availabilityResult.message,
+        });
+        return;
+      }
+
+      const request = buildExampleRequest(interaction);
+      const tokenResult = consumeCommandToken(interaction, request.hidden);
+      if (!tokenResult.allowed) {
+        await interaction.editReply({
+          content: tokenResult.message,
+        });
+        return;
+      }
+
+      request.hidden = tokenResult.hidden;
+      await handleExampleCommand(interaction, request);
+      return;
+    }
+
+    const requestedHidden = interaction.options.getBoolean('hidden') || false;
+    const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
+    if (!availabilityResult.allowed) {
+      await interaction.editReply({
+        content: availabilityResult.message,
+      });
       return;
     }
 
     const request = buildRelayRequest(interaction);
+    const tokenResult = consumeCommandToken(interaction, request.hidden);
+    if (!tokenResult.allowed) {
+      await interaction.editReply({
+        content: tokenResult.message,
+      });
+      return;
+    }
+
+    request.hidden = tokenResult.hidden;
     await enqueueRelayRequest(interaction, request);
   } catch (error) {
     if (!error?.suppressConsoleLog) {
@@ -2219,6 +2528,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.reply(response).catch(() => {});
   }
 });
+
+loadCommandTokenState();
+scheduleCommandTokenReset();
 
 (async () => {
   await registerCommands();

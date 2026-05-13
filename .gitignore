@@ -7,3 +7,4 @@ package.json
 .env
 *.env
 !example.env
+discord-bot-script/user_tokens.json
