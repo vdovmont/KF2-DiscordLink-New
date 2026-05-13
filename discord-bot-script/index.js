@@ -569,6 +569,35 @@ function getNextCommandTokenResetMs(nowMs = Date.now()) {
   return getCommandTokenWindowStartMs(nowMs) + getCommandTokenPeriodMs();
 }
 
+function formatDurationUntilReset(durationMs) {
+  let remainingSeconds = Math.max(1, Math.ceil(durationMs / 1000));
+  const days = Math.floor(remainingSeconds / 86400);
+  remainingSeconds %= 86400;
+  const hours = Math.floor(remainingSeconds / 3600);
+  remainingSeconds %= 3600;
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  const parts = [];
+
+  if (days > 0) {
+    parts.push(`${days}d`);
+  }
+  if (hours > 0 || parts.length > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || parts.length > 0) {
+    parts.push(`${minutes}m`);
+  }
+  parts.push(`${seconds}s`);
+
+  return parts.join('');
+}
+
+function getCommandTokenLimitMessage(nowMs = Date.now()) {
+  const waitTime = formatDurationUntilReset(getNextCommandTokenResetMs(nowMs) - nowMs);
+  return `You reached command use limit. Please wait ${waitTime} until you can use commands again.`;
+}
+
 function normalizeTokenRecord(record, currentWindowStartMs) {
   if (!record || typeof record !== 'object') {
     return null;
@@ -698,7 +727,7 @@ function resolveCommandTokenResult(interaction, requestedHidden, consume) {
   if (!userId) {
     return {
       allowed: false,
-      message: 'You reached command use limit. Please wait a bit until you can use commands again.',
+      message: getCommandTokenLimitMessage(),
     };
   }
 
@@ -728,7 +757,7 @@ function resolveCommandTokenResult(interaction, requestedHidden, consume) {
   if (record[spentKey] >= limit) {
     return {
       allowed: false,
-      message: 'You reached command use limit. Please wait a bit until you can use commands again.',
+      message: getCommandTokenLimitMessage(),
     };
   }
 
