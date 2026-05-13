@@ -168,6 +168,14 @@ function parsePositiveInteger(value, defaultValue) {
   return parsedValue > 0 ? parsedValue : defaultValue;
 }
 
+function secondsToMilliseconds(seconds) {
+  return seconds * 1000;
+}
+
+function parseSecondsToMilliseconds(value, defaultSeconds) {
+  return secondsToMilliseconds(parsePositiveInteger(value, defaultSeconds));
+}
+
 function parseRoleIds(value) {
   return (value || '')
     .split(',')
@@ -183,12 +191,12 @@ function parseChoice(value, choices, defaultValue) {
 function loadRuntimeConfig(env = process.env) {
   return {
     cdaAvatarUrl: env.CDA_AVATAR_URL || '',
-    kf2ReconnectDelayMs: parseInteger(env.KF2_RECONNECT_DELAY_MS, 30000),
-    kf2ConnectTimeoutMs: parseInteger(env.KF2_CONNECT_TIMEOUT_MS, 5000),
-    kf2RequestTimeoutMs: parseInteger(env.KF2_REQUEST_TIMEOUT_MS, 60000),
+    kf2ReconnectDelayMs: parseSecondsToMilliseconds(env.KF2_RECONNECT_DELAY_SECONDS, 30),
+    kf2ConnectTimeoutMs: parseSecondsToMilliseconds(env.KF2_CONNECT_TIMEOUT_SECONDS, 5),
+    kf2RequestTimeoutMs: parseSecondsToMilliseconds(env.KF2_REQUEST_TIMEOUT_SECONDS, 60),
     kf2KickVoteDiscordChannelId: (env.KF2_KICK_VOTE_DISCORD_CHANNEL_ID || '').trim(),
     kf2PauseSkipVoteDiscordChannelId: (env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_ID || '').trim(),
-    kf2VoteTimeoutMs: parseInteger(env.KF2_VOTE_TIMEOUT_MS, 30000),
+    kf2VoteTimeoutMs: parseSecondsToMilliseconds(env.KF2_VOTE_TIMEOUT_SECONDS, 30),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
     commandPublicTokenLimit: parsePositiveInteger(env.COMMAND_PUBLIC_TOKEN_LIMIT, 5),
@@ -544,7 +552,7 @@ function hasAnyAllowedRole(interaction, allowedRoleIds) {
 }
 
 function getCommandTokenPeriodMs() {
-  return COMMAND_TOKEN_RESET_SECONDS * 1000;
+  return secondsToMilliseconds(COMMAND_TOKEN_RESET_SECONDS);
 }
 
 function getLocalDayStartMs(nowMs = Date.now()) {
