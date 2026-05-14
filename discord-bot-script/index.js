@@ -1146,7 +1146,8 @@ async function sendWebhookMessage(webhookUrl, payload) {
   });
 
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    const body = await response.text().catch(() => '');
+    throw new Error(`${response.status} ${response.statusText}${body ? `: ${body}` : ''}`);
   }
 }
 
@@ -1163,11 +1164,19 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
         logWarn(`Posting webhook message for ${chatMessage.username} without avatar_url.`);
       }
 
-      await sendWebhookMessage(config.webhookUrl, {
+      const payload = {
         username: chatMessage.username,
         avatar_url: avatarUrl || undefined,
         content: chatMessage.content,
-      });
+      };
+
+      try {
+        await sendWebhookMessage(config.webhookUrl, payload);
+      } catch (error) {
+        console.error('Discord webhook send failed:', error?.message || error);
+        console.error('Payload was:', JSON.stringify(payload, null, 2));
+        throw error;
+      }
       return;
     }
 
@@ -1179,7 +1188,17 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
           continue;
         }
 
-        await channel.send(`[${config.name}] ${chatMessage.username}: ${chatMessage.content}`);
+        const payload = {
+          content: `[${config.name}] ${chatMessage.username}: ${chatMessage.content}`,
+        };
+
+        try {
+          await channel.send(payload);
+        } catch (error) {
+          console.error('Discord channel send failed:', error?.status, error?.rawError || error);
+          console.error('Payload was:', JSON.stringify(payload, null, 2));
+          throw error;
+        }
       } catch (error) {
         logWarn(`Failed to forward KF2 chat from ${config.name} to Discord channel ${channelId}: ${error.message || error}`);
       }
