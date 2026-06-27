@@ -1229,6 +1229,10 @@ function normalizeVotePlayerName(value) {
   return String(value || '').trim();
 }
 
+function quoteVotePlayerName(value) {
+  return `"${normalizeVotePlayerName(value) || 'Unknown'}"`;
+}
+
 function getVoteStateKey(config) {
   return config.difficulty;
 }
@@ -1248,13 +1252,14 @@ function clearVoteState(difficulty) {
 
 function buildVoteHeader(state) {
   const difficultyLabel = state.difficultyLabel || getDifficultyLabel(state.difficulty);
+  const initiator = quoteVotePlayerName(state.initiator);
 
   if (state.subtype === 'kick') {
-    const target = state.target || 'Unknown';
-    return `${difficultyLabel} - ${state.initiator} initiated kick of ${target}:`;
+    const target = quoteVotePlayerName(state.target);
+    return `${difficultyLabel} - ${initiator} initiated kick of ${target}:`;
   }
 
-  return `${difficultyLabel} - ${state.initiator} initiated ${state.subtype} vote:`;
+  return `${difficultyLabel} - ${initiator} initiated ${state.subtype} vote:`;
 }
 
 function getVoteChannelIds(config, subtype) {
