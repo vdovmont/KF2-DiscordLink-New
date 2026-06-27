@@ -2213,6 +2213,16 @@ function formatWaveTypeLabel(waveType) {
   return waveType.trim();
 }
 
+function formatSignedPercent(value) {
+  const numberValue = Number.parseInt(value, 10);
+
+  if (Number.isNaN(numberValue)) {
+    return null;
+  }
+
+  return `${numberValue > 0 ? '+' : ''}${numberValue}%`;
+}
+
 function formatInfoResponse(interaction, request, responsePayload) {
   if (request.commandName !== 'info') {
     return responsePayload;
@@ -2228,10 +2238,10 @@ function formatInfoResponse(interaction, request, responsePayload) {
 
   if (typeof info.mapName === 'string' && info.mapName.trim() !== '') {
     const mapParts = [`Map: ${info.mapName.trim()}`];
-    const mapXp = Number.parseInt(info.mapXP, 10);
+    const mapXp = formatSignedPercent(info.mapXP);
 
-    if (!Number.isNaN(mapXp)) {
-      mapParts.push(`+${mapXp}% XP`);
+    if (mapXp) {
+      mapParts.push(`${mapXp} XP`);
     }
 
     lines.push(mapParts.join(' | '));
