@@ -33,6 +33,7 @@ let KF2_KICK_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2KickVoteDiscordC
 let KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2PauseSkipVoteDiscordChannelIds;
 let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
+let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
 let COMMAND_PUBLIC_TOKEN_LIMIT = initialRuntimeConfig.commandPublicTokenLimit;
 let COMMAND_PRIVATE_TOKEN_LIMIT = initialRuntimeConfig.commandPrivateTokenLimit;
@@ -151,6 +152,7 @@ let activeRelayMap = new Map();
 let activeDifficulties = [];
 const relayQueues = new Map();
 const processingDifficulties = new Set();
+const webhookSendQueues = new Map();
 const kf2Connections = [];
 const activeVotes = new Map();
 let envReloadTimer = null;
@@ -214,6 +216,7 @@ function loadRuntimeConfig(env = process.env) {
     kf2PauseSkipVoteDiscordChannelIds: parseChannelIds(env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS),
     kf2VoteTimeoutMs: parseSecondsToMilliseconds(env.KF2_VOTE_TIMEOUT_SECONDS, 30),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
+    discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
     commandPublicTokenLimit: parsePositiveInteger(env.COMMAND_PUBLIC_TOKEN_LIMIT, 5),
     commandPrivateTokenLimit: parsePositiveInteger(env.COMMAND_PRIVATE_TOKEN_LIMIT, 10),
@@ -233,6 +236,7 @@ function applyRuntimeConfig(config) {
   KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = config.kf2PauseSkipVoteDiscordChannelIds;
   KF2_VOTE_TIMEOUT_MS = config.kf2VoteTimeoutMs;
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
+  DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
   SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
   COMMAND_PUBLIC_TOKEN_LIMIT = config.commandPublicTokenLimit;
   COMMAND_PRIVATE_TOKEN_LIMIT = config.commandPrivateTokenLimit;
@@ -1135,20 +1139,75 @@ async function resolveSteamAvatarUrl(steamId, username) {
   }
 }
 
+function wait(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function getDiscordRateLimitRetryMs(response, responseBody) {
+  try {
+    const parsedBody = responseBody ? JSON.parse(responseBody) : null;
+    const retryAfterSeconds = Number.parseFloat(parsedBody?.retry_after);
+
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+      return Math.ceil(retryAfterSeconds * 1000) + 100;
+    }
+  } catch (error) {
+    // Fall back to the response header below.
+  }
+
+  const retryAfterHeader = Number.parseFloat(response.headers.get('retry-after'));
+  if (Number.isFinite(retryAfterHeader) && retryAfterHeader >= 0) {
+    return Math.ceil(retryAfterHeader * 1000) + 100;
+  }
+
+  return 1000;
+}
+
+async function sendWebhookMessageNow(webhookUrl, payload) {
+  const body = JSON.stringify(payload);
+
+  for (let attempt = 0; attempt <= DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT; attempt += 1) {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body,
+    });
+
+    if (response.ok) {
+      return;
+    }
+
+    const responseBody = await response.text().catch(() => '');
+    if (response.status === 429 && attempt < DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT) {
+      const retryMs = getDiscordRateLimitRetryMs(response, responseBody);
+      logWarnConfig(`Discord webhook rate limited; retrying in ${retryMs}ms.`);
+      await wait(retryMs);
+      continue;
+    }
+
+    throw new Error(`${response.status} ${response.statusText}${responseBody ? `: ${responseBody}` : ''}`);
+  }
+}
+
 async function sendWebhookMessage(webhookUrl, payload) {
-  const response = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(payload),
+  const previousSend = webhookSendQueues.get(webhookUrl) || Promise.resolve();
+  const nextSend = previousSend
+    .catch(() => {})
+    .then(() => sendWebhookMessageNow(webhookUrl, payload));
+
+  const queuedSend = nextSend.finally(() => {
+    if (webhookSendQueues.get(webhookUrl) === queuedSend) {
+      webhookSendQueues.delete(webhookUrl);
+    }
   });
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`${response.status} ${response.statusText}${body ? `: ${body}` : ''}`);
-  }
+  webhookSendQueues.set(webhookUrl, queuedSend);
+  return nextSend;
 }
 
 async function forwardKf2ChatToDiscord(config, chatMessage) {
