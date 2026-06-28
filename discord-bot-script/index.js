@@ -22,6 +22,7 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
+let activeSteamApiKey = STEAM_API_KEY;
 const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
 const initialRuntimeConfig = loadRuntimeConfig(process.env);
@@ -950,7 +951,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('target')
-          .setDescription('Player label to show in formatted examples like /perk')
+          .setDescription('SteamID64, Steam profile link, or nickname to show in formatted examples')
           .setRequired(false),
       ),
   )),
@@ -1112,16 +1113,22 @@ function normalizeSteamId(rawSteamId) {
 }
 
 async function resolveSteamAvatarUrl(steamId, username) {
-  if (!STEAM_API_KEY || !steamId) {
+  if (!activeSteamApiKey || !steamId) {
     return '';
   }
 
   try {
     const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
-    url.searchParams.set('key', STEAM_API_KEY);
+    url.searchParams.set('key', activeSteamApiKey);
     url.searchParams.set('steamids', steamId);
 
     const response = await fetch(url);
+    if (response.status === 401 || response.status === 403) {
+      activeSteamApiKey = '';
+      logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
+      return '';
+    }
+
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
     }
@@ -1795,15 +1802,21 @@ function parseSteamProfileTarget(rawTarget) {
 }
 
 async function getSteamPlayerSummary(steamId) {
-  if (!STEAM_API_KEY) {
+  if (!activeSteamApiKey) {
     return null;
   }
 
   const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
-  url.searchParams.set('key', STEAM_API_KEY);
+  url.searchParams.set('key', activeSteamApiKey);
   url.searchParams.set('steamids', steamId);
 
   const response = await fetch(url);
+  if (response.status === 401 || response.status === 403) {
+    activeSteamApiKey = '';
+    logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
+    return null;
+  }
+
   if (!response.ok) {
     throw new Error(`Steam API request failed: ${response.status} ${response.statusText}`);
   }
@@ -1817,28 +1830,55 @@ async function ensureSteamIdExists(steamId) {
     throw new Error('Invalid Steam target. Provide a valid nickname, SteamID64 or Steam profile link.');
   }
 
-  if (!STEAM_API_KEY) {
-    return false;
+  if (!activeSteamApiKey) {
+    return null;
   }
 
   const player = await getSteamPlayerSummary(steamId);
+  if (!activeSteamApiKey) {
+    return null;
+  }
+
   if (!player) {
     throw new Error(`Steam profile not found for SteamID64 ${steamId}.`);
   }
 
-  return true;
+  return player;
+}
+
+function escapeDiscordMarkdownLinkText(value) {
+  return String(value || '').replace(/([\\[\]])/g, '\\$1');
+}
+
+function getSteamProfileUrl(steamId, player) {
+  return player?.profileurl || `https://steamcommunity.com/profiles/${steamId}/`;
+}
+
+function formatSteamProfileDisplay(steamId, player) {
+  if (!player) {
+    return steamId;
+  }
+
+  const label = player?.personaname || steamId;
+  return `[${escapeDiscordMarkdownLinkText(label)}](${getSteamProfileUrl(steamId, player)})`;
 }
 
 async function resolveSteamVanityUrl(vanityName) {
-  if (!STEAM_API_KEY) {
+  if (!activeSteamApiKey) {
     throw new Error('Steam vanity profile links require STEAM_API_KEY to resolve.');
   }
 
   const url = new URL('https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/');
-  url.searchParams.set('key', STEAM_API_KEY);
+  url.searchParams.set('key', activeSteamApiKey);
   url.searchParams.set('vanityurl', vanityName);
 
   const response = await fetch(url);
+  if (response.status === 401 || response.status === 403) {
+    activeSteamApiKey = '';
+    logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
+    throw new Error('Steam vanity profile links require a valid STEAM_API_KEY to resolve.');
+  }
+
   if (!response.ok) {
     throw new Error(`Steam API request failed: ${response.status} ${response.statusText}`);
   }
@@ -1849,10 +1889,11 @@ async function resolveSteamVanityUrl(vanityName) {
     throw new Error(`Steam vanity profile "${vanityName}" was not found.`);
   }
 
-  await ensureSteamIdExists(steamId);
+  const player = await ensureSteamIdExists(steamId);
   return {
     steamId,
-    steamApiChecked: true,
+    steamApiChecked: Boolean(player),
+    player,
   };
 }
 
@@ -1865,22 +1906,22 @@ async function resolvePlayerTarget(rawTarget) {
   const steamProfileTarget = parseSteamProfileTarget(target);
   if (steamProfileTarget) {
     if (steamProfileTarget.type === 'steamid') {
-      const steamApiChecked = await ensureSteamIdExists(steamProfileTarget.steamId);
+      const player = await ensureSteamIdExists(steamProfileTarget.steamId);
       return {
         type: 'steamid',
         value: steamProfileTarget.steamId,
-        display: steamProfileTarget.steamId,
+        display: formatSteamProfileDisplay(steamProfileTarget.steamId, player),
         source: 'profile-link',
-        steamApiChecked,
+        steamApiChecked: Boolean(player),
       };
     }
 
     if (steamProfileTarget.type === 'vanity') {
-      const { steamId, steamApiChecked } = await resolveSteamVanityUrl(steamProfileTarget.vanityName);
+      const { steamId, steamApiChecked, player } = await resolveSteamVanityUrl(steamProfileTarget.vanityName);
       return {
         type: 'steamid',
         value: steamId,
-        display: steamId,
+        display: formatSteamProfileDisplay(steamId, player),
         source: 'vanity-link',
         steamApiChecked,
       };
@@ -1890,13 +1931,13 @@ async function resolvePlayerTarget(rawTarget) {
   }
 
   if (/^\d{17}$/.test(target)) {
-    const steamApiChecked = await ensureSteamIdExists(target);
+    const player = await ensureSteamIdExists(target);
     return {
       type: 'steamid',
       value: target,
-      display: target,
+      display: formatSteamProfileDisplay(target, player),
       source: 'steamid',
-      steamApiChecked,
+      steamApiChecked: Boolean(player),
     };
   }
 
@@ -1929,6 +1970,7 @@ function formatTargetResolutionExample(input, target) {
     `Detected as: ${target.type}`,
     `Source: ${target.source}`,
     `Value sent to KF2: ${target.type}:${target.value}`,
+    `Display in responses: ${target.display}`,
     `Example KF2 request: ${buildPlayerTargetPayload('perk', target)}`,
     `Steam API validation: ${steamApiStatus}`,
   ].join('\n');
@@ -2800,12 +2842,12 @@ function buildExampleVoteConfig(difficulty) {
   };
 }
 
-function buildExampleRequest(interaction) {
+async function buildExampleRequest(interaction) {
   ensureExampleAccess(interaction);
 
   const commandName = interaction.options.getString('command', true);
   const difficulty = interaction.options.getString('difficulty');
-  const requestedTarget = interaction.options.getString('target')?.trim();
+  const targetInput = interaction.options.getString('target')?.trim();
   const responsePayload = interaction.options.getString('response', true).trim();
   const hidden = interaction.options.getBoolean('hidden') || false;
   const raw = resolveRawOption(interaction);
@@ -2831,18 +2873,24 @@ function buildExampleRequest(interaction) {
   }
 
   if (commandName === 'target') {
+    const resolutionInput = targetInput || responsePayload;
     return {
       commandName,
+      targetInput: resolutionInput,
       responsePayload,
       hidden,
       raw,
     };
   }
 
+  const resolvedTarget = targetInput
+    ? await resolvePlayerTarget(targetInput)
+    : null;
+
   return {
     commandName,
     difficulty,
-    requestedTarget,
+    requestedTarget: resolvedTarget?.display || null,
     responsePayload,
     hidden,
     raw,
@@ -2852,14 +2900,14 @@ function buildExampleRequest(interaction) {
 async function handleExampleCommand(interaction, request) {
   if (request.commandName === 'target') {
     try {
-      const target = await resolvePlayerTarget(request.responsePayload);
+      const target = await resolvePlayerTarget(request.targetInput);
       await editDiscordReply(interaction, {
-        content: formatTargetResolutionExample(request.responsePayload, target),
+        content: formatTargetResolutionExample(request.targetInput, target),
       });
     } catch (error) {
       await editDiscordReply(interaction, {
         content: [
-          `Input: ${suppressDiscordLinkEmbeds(request.responsePayload)}`,
+          `Input: ${suppressDiscordLinkEmbeds(request.targetInput)}`,
           'Target resolution failed.',
           `Reason: ${error.message || error}`,
         ].join('\n'),
@@ -2922,6 +2970,33 @@ async function handleAutocomplete(interaction) {
   await interaction.respond(choices);
 }
 
+async function validateSteamApiKeyOnStartup() {
+  if (!activeSteamApiKey) {
+    return;
+  }
+
+  try {
+    const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
+    url.searchParams.set('key', activeSteamApiKey);
+    url.searchParams.set('steamids', '76561197960265728');
+
+    const response = await fetch(url);
+    if (response.status === 401 || response.status === 403) {
+      activeSteamApiKey = '';
+      logWarn('STEAM_API_KEY is invalid; continuing with Steam lookups disabled.');
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+
+    logInfo('STEAM_API_KEY validated successfully.');
+  } catch (error) {
+    logWarn(`Could not validate STEAM_API_KEY: ${error.message || error}`);
+  }
+}
+
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
 
@@ -2957,9 +3032,10 @@ const client = new Client({
   ],
 });
 
-client.once(Events.ClientReady, (readyClient) => {
+client.once(Events.ClientReady, async (readyClient) => {
   logInfo(`Logged in as ${readyClient.user.tag}`);
   try {
+    await validateSteamApiKeyOnStartup();
     initializeKf2Connections();
   } catch (error) {
     logError(error.message || error);
@@ -3025,7 +3101,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-      const request = buildExampleRequest(interaction);
+      const request = await buildExampleRequest(interaction);
       const tokenResult = consumeCommandToken(interaction, request.hidden);
       if (!tokenResult.allowed) {
         await editDiscordReply(interaction, {
