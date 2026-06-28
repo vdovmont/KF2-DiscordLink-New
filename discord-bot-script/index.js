@@ -116,7 +116,7 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 
-const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'example'];
+const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'rankings', 'example'];
 const FORMAT_RESPONSE_ERROR_MESSAGE = 'Oh-oh: something went wrong with response from KF2 server. Please use "raw" option for detailed response.';
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
@@ -127,6 +127,39 @@ const RANK_DISPLAY_ORDER = [
   { key: 'hoe', label: 'HoE' },
   { key: 'extreme', label: 'Extreme' },
 ];
+
+function withSuppressedEmbeds(options) {
+  const messageOptions = typeof options === 'string'
+    ? { content: options }
+    : { ...options };
+  messageOptions.flags = (messageOptions.flags || 0) | MessageFlags.SuppressEmbeds;
+  return messageOptions;
+}
+
+function sendDiscordMessage(channel, options) {
+  return channel.send(withSuppressedEmbeds(options));
+}
+
+function editDiscordMessage(message, options) {
+  return message.edit(withSuppressedEmbeds(options));
+}
+
+function replyDiscordInteraction(interaction, options) {
+  return interaction.reply(withSuppressedEmbeds(options));
+}
+
+function editDiscordReply(interaction, options) {
+  return interaction.editReply(withSuppressedEmbeds(options));
+}
+
+function followUpDiscordInteraction(interaction, options) {
+  return interaction.followUp(withSuppressedEmbeds(options));
+}
+
+function deferDiscordReply(interaction, options) {
+  return interaction.deferReply(withSuppressedEmbeds(options));
+}
+
 const PERK_DISPLAY_ORDER = [
   { key: 'berserker', label: 'Berserker', emojiName: 'KFZerker', aliases: ['berserker'] },
   { key: 'commando', label: 'Commando', emojiName: 'KFMando', aliases: ['commando'] },
@@ -536,6 +569,15 @@ function addRawOption(commandBuilder) {
   );
 }
 
+function addTargetOption(commandBuilder) {
+  return commandBuilder.addStringOption((option) =>
+    option
+      .setName('target')
+      .setDescription('Nickname, SteamID64 or Steam profile link')
+      .setRequired(true),
+  );
+}
+
 function addDifficultyOptionWithRequired(commandBuilder, required) {
   return commandBuilder.addStringOption((option) =>
     option
@@ -846,69 +888,25 @@ const commandDefinitions = [
       .setDescription('Send a server info request to the matching KF2 server'),
   ))),
   addRawOption(addHiddenOption(
-    new SlashCommandBuilder()
+    addTargetOption(new SlashCommandBuilder()
       .setName('perk')
-      .setDescription('Send a perk request to the first connected KF2 server')
-      .addStringOption((option) =>
-        option
-          .setName('nickname')
-          .setDescription('Discord nickname or Steam nickname')
-          .setRequired(false),
-      )
-      .addStringOption((option) =>
-        option
-          .setName('steamid')
-          .setDescription('Steam ID64')
-          .setRequired(false),
-      ),
+      .setDescription('Send a perk request to the first connected KF2 server')),
   )),
-  addRawOption(addHiddenOption(new SlashCommandBuilder()
+  addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
     .setName('vipinfo')
-    .setDescription('Send a VIP info request to the first connected KF2 server')
-    .addStringOption((option) =>
-      option
-        .setName('nickname')
-        .setDescription('Discord nickname or Steam nickname')
-        .setRequired(false),
-    )
-    .addStringOption((option) =>
-      option
-        .setName('steamid')
-        .setDescription('Steam ID64')
-        .setRequired(false),
-    ))),
-  addRawOption(addHiddenOption(new SlashCommandBuilder()
+    .setDescription('Send a VIP info request to the first connected KF2 server')))),
+  addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
     .setName('overdrives')
-    .setDescription('Send an overdrives request to the first connected KF2 server')
-    .addStringOption((option) =>
-      option
-        .setName('nickname')
-        .setDescription('Discord nickname or Steam nickname')
-        .setRequired(false),
-    )
-    .addStringOption((option) =>
-      option
-        .setName('steamid')
-        .setDescription('Steam ID64')
-        .setRequired(false),
-    ))),
-  addRawOption(addHiddenOption(addDifficultyOptionWithRequired(
+    .setDescription('Send an overdrives request to the first connected KF2 server')))),
+  addRawOption(addHiddenOption(addTargetOption(
     new SlashCommandBuilder()
       .setName('rank')
-      .setDescription('Send a rank request to the matching KF2 server')
-      .addStringOption((option) =>
-        option
-          .setName('nickname')
-          .setDescription('Steam nickname')
-          .setRequired(false),
-      )
-      .addStringOption((option) =>
-        option
-          .setName('steamid')
-          .setDescription('Steam ID64')
-          .setRequired(false),
-      ),
-    false,
+      .setDescription('Send a player rank request to the first connected KF2 server'),
+  ))),
+  addRawOption(addHiddenOption(addDifficultyOption(
+    new SlashCommandBuilder()
+      .setName('rankings')
+      .setDescription('Send a server rankings request to the matching KF2 server'),
   ))),
   addRawOption(addHiddenOption(
     new SlashCommandBuilder()
@@ -925,6 +923,8 @@ const commandDefinitions = [
             { name: 'vipinfo', value: 'vipinfo' },
             { name: 'overdrives', value: 'overdrives' },
             { name: 'rank', value: 'rank' },
+            { name: 'rankings', value: 'rankings' },
+            { name: 'target', value: 'target' },
             { name: 'vote', value: 'vote' },
           ),
       )
@@ -1166,7 +1166,7 @@ function getDiscordRateLimitRetryMs(response, responseBody) {
 }
 
 async function sendWebhookMessageNow(webhookUrl, payload) {
-  const body = JSON.stringify(payload);
+  const body = JSON.stringify(withSuppressedEmbeds(payload));
 
   for (let attempt = 0; attempt <= DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT; attempt += 1) {
     const response = await fetch(webhookUrl, {
@@ -1252,7 +1252,7 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
         };
 
         try {
-          await channel.send(payload);
+          await sendDiscordMessage(channel, payload);
         } catch (error) {
           console.error('Discord channel send failed:', error?.status, error?.rawError || error);
           console.error('Payload was:', JSON.stringify(payload, null, 2));
@@ -1362,7 +1362,9 @@ function queueVoteMessageEdit(state) {
   state.editPromise = (state.editPromise || Promise.resolve())
     .then(() => Promise.all(state.messages
       .filter((message) => message && typeof message.edit === 'function')
-      .map((message) => message.edit(formatVoteMessage(state)))))
+      .map((message) => editDiscordMessage(message, {
+        content: formatVoteMessage(state),
+      }))))
     .catch((error) => {
       logWarnConfig(`Failed to edit vote message for "${state.difficulty}": ${error.message || error}`);
     });
@@ -1438,7 +1440,9 @@ async function startVoteState(config, payload) {
           continue;
         }
 
-        state.messages.push(await channel.send(formatVoteMessage(state)));
+        state.messages.push(await sendDiscordMessage(channel, {
+          content: formatVoteMessage(state),
+        }));
       } catch (error) {
         logWarnConfig(`Failed to post vote message for ${config.name} to channel ${channelId}: ${error.message || error}`);
       }
@@ -1735,7 +1739,221 @@ function isValidSteamId64(steamId) {
   }
 }
 
-function buildRelayRequest(interaction) {
+function parseSteamProfileTarget(rawTarget) {
+  const target = String(rawTarget || '').trim();
+  if (!target) {
+    return null;
+  }
+
+  let urlText = target;
+  if (/^(?:www\.)?steamcommunity\.com(?:[/?#]|$)/i.test(urlText)) {
+    urlText = `https://${urlText}`;
+  }
+
+  let url;
+  try {
+    url = new URL(urlText);
+  } catch (error) {
+    return null;
+  }
+
+  const hostname = url.hostname.toLowerCase();
+  if (hostname !== 'steamcommunity.com' && hostname !== 'www.steamcommunity.com') {
+    return null;
+  }
+
+  let pathParts;
+  try {
+    pathParts = url.pathname
+      .split('/')
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part));
+  } catch (error) {
+    return { type: 'invalid' };
+  }
+
+  if (pathParts.length < 2) {
+    return { type: 'invalid' };
+  }
+
+  const profileType = pathParts[0].toLowerCase();
+  if (profileType === 'profiles') {
+    return {
+      type: 'steamid',
+      steamId: pathParts[1],
+    };
+  }
+
+  if (profileType === 'id') {
+    return {
+      type: 'vanity',
+      vanityName: pathParts[1],
+    };
+  }
+
+  return { type: 'invalid' };
+}
+
+async function getSteamPlayerSummary(steamId) {
+  if (!STEAM_API_KEY) {
+    return null;
+  }
+
+  const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
+  url.searchParams.set('key', STEAM_API_KEY);
+  url.searchParams.set('steamids', steamId);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Steam API request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data?.response?.players?.[0] || null;
+}
+
+async function ensureSteamIdExists(steamId) {
+  if (!isValidSteamId64(steamId)) {
+    throw new Error('Invalid Steam target. Provide a valid nickname, SteamID64 or Steam profile link.');
+  }
+
+  if (!STEAM_API_KEY) {
+    return false;
+  }
+
+  const player = await getSteamPlayerSummary(steamId);
+  if (!player) {
+    throw new Error(`Steam profile not found for SteamID64 ${steamId}.`);
+  }
+
+  return true;
+}
+
+async function resolveSteamVanityUrl(vanityName) {
+  if (!STEAM_API_KEY) {
+    throw new Error('Steam vanity profile links require STEAM_API_KEY to resolve.');
+  }
+
+  const url = new URL('https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/');
+  url.searchParams.set('key', STEAM_API_KEY);
+  url.searchParams.set('vanityurl', vanityName);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Steam API request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  const steamId = data?.response?.steamid;
+  if (data?.response?.success !== 1 || !steamId) {
+    throw new Error(`Steam vanity profile "${vanityName}" was not found.`);
+  }
+
+  await ensureSteamIdExists(steamId);
+  return {
+    steamId,
+    steamApiChecked: true,
+  };
+}
+
+async function resolvePlayerTarget(rawTarget) {
+  const target = String(rawTarget || '').trim();
+  if (!target) {
+    throw new Error('Provide a target.');
+  }
+
+  const steamProfileTarget = parseSteamProfileTarget(target);
+  if (steamProfileTarget) {
+    if (steamProfileTarget.type === 'steamid') {
+      const steamApiChecked = await ensureSteamIdExists(steamProfileTarget.steamId);
+      return {
+        type: 'steamid',
+        value: steamProfileTarget.steamId,
+        display: steamProfileTarget.steamId,
+        source: 'profile-link',
+        steamApiChecked,
+      };
+    }
+
+    if (steamProfileTarget.type === 'vanity') {
+      const { steamId, steamApiChecked } = await resolveSteamVanityUrl(steamProfileTarget.vanityName);
+      return {
+        type: 'steamid',
+        value: steamId,
+        display: steamId,
+        source: 'vanity-link',
+        steamApiChecked,
+      };
+    }
+
+    throw new Error('Invalid Steam profile link. Use steamcommunity.com/profiles/<steamid64> or steamcommunity.com/id/<name>.');
+  }
+
+  if (/^\d{17}$/.test(target)) {
+    const steamApiChecked = await ensureSteamIdExists(target);
+    return {
+      type: 'steamid',
+      value: target,
+      display: target,
+      source: 'steamid',
+      steamApiChecked,
+    };
+  }
+
+  return {
+    type: 'nickname',
+    value: target,
+    display: target,
+    source: 'nickname',
+    steamApiChecked: false,
+  };
+}
+
+function buildPlayerTargetPayload(commandName, target) {
+  return `/dsrequest ${commandName} ${target.type}:${target.value}`;
+}
+
+function suppressDiscordLinkEmbeds(text) {
+  return String(text).replace(/(^|[^\w<])(https?:\/\/[^\s<>]+)/gi, (match, prefix, url) => `${prefix}<${url}>`);
+}
+
+function formatTargetResolutionExample(input, target) {
+  const steamApiStatus = target.type === 'nickname'
+    ? 'not used for nicknames'
+    : target.steamApiChecked
+      ? 'checked and found'
+      : 'skipped because STEAM_API_KEY is not configured';
+
+  return [
+    `Input: ${suppressDiscordLinkEmbeds(input)}`,
+    `Detected as: ${target.type}`,
+    `Source: ${target.source}`,
+    `Value sent to KF2: ${target.type}:${target.value}`,
+    `Example KF2 request: ${buildPlayerTargetPayload('perk', target)}`,
+    `Steam API validation: ${steamApiStatus}`,
+  ].join('\n');
+}
+
+async function buildTargetRelayRequest(interaction, commandName, hidden, raw) {
+  const relay = getDefaultRelay();
+
+  if (!relay) {
+    throw new Error('No active difficulties are available right now.');
+  }
+
+  const target = await resolvePlayerTarget(interaction.options.getString('target', true));
+
+  return {
+    commandName,
+    difficulty: relay.difficulty,
+    requestedTarget: target.display,
+    payload: buildPlayerTargetPayload(commandName, target),
+    hidden,
+    raw,
+  };
+}
+
+async function buildRelayRequest(interaction) {
   const commandName = interaction.commandName;
   const hidden = interaction.options.getBoolean('hidden') || false;
   const raw = resolveRawOption(interaction);
@@ -1757,121 +1975,23 @@ function buildRelayRequest(interaction) {
   }
 
   if (commandName === 'vipinfo') {
-    const relay = getDefaultRelay();
-
-    if (!relay) {
-      throw new Error('No active difficulties are available right now.');
-    }
-
-    const nickname = interaction.options.getString('nickname');
-    const steamId = interaction.options.getString('steamid');
-
-    if (!nickname && !steamId) {
-      throw new Error('Provide either nickname or steamid for /vipinfo.');
-    }
-
-    if (nickname && steamId) {
-      throw new Error('Use either nickname or steamid for /vipinfo, not both.');
-    }
-
-    if (steamId && !isValidSteamId64(steamId)) {
-      throw new Error('Invalid steamid. Provide a valid SteamID64.');
-    }
-
-    return {
-      commandName,
-      difficulty: relay.difficulty,
-      requestedTarget: nickname ? nickname.trim() : steamId.trim(),
-      payload: nickname
-        ? `/dsrequest vipinfo nickname:${nickname.trim()}`
-        : `/dsrequest vipinfo steamid:${steamId.trim()}`,
-      hidden,
-      raw,
-    };
+    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
   }
 
   if (commandName === 'perk') {
-    const relay = getDefaultRelay();
-
-    if (!relay) {
-      throw new Error('No active difficulties are available right now.');
-    }
-
-    const nickname = interaction.options.getString('nickname');
-    const steamId = interaction.options.getString('steamid');
-
-    if (!nickname && !steamId) {
-      throw new Error('Provide either nickname or steamid for /perk.');
-    }
-
-    if (nickname && steamId) {
-      throw new Error('Use either nickname or steamid for /perk, not both.');
-    }
-
-    if (steamId && !isValidSteamId64(steamId)) {
-      throw new Error('Invalid steamid. Provide a valid SteamID64.');
-    }
-
-    return {
-      commandName,
-      difficulty: relay.difficulty,
-      requestedTarget: nickname ? nickname.trim() : steamId.trim(),
-      payload: nickname
-        ? `/dsrequest perk nickname:${nickname.trim()}`
-        : `/dsrequest perk steamid:${steamId.trim()}`,
-      hidden,
-      raw,
-    };
+    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
   }
 
   if (commandName === 'overdrives') {
-    const relay = getDefaultRelay();
-
-    if (!relay) {
-      throw new Error('No active difficulties are available right now.');
-    }
-
-    const nickname = interaction.options.getString('nickname');
-    const steamId = interaction.options.getString('steamid');
-
-    if (!nickname && !steamId) {
-      throw new Error('Provide either nickname or steamid for /overdrives.');
-    }
-
-    if (nickname && steamId) {
-      throw new Error('Use either nickname or steamid for /overdrives, not both.');
-    }
-
-    if (steamId && !isValidSteamId64(steamId)) {
-      throw new Error('Invalid steamid. Provide a valid SteamID64.');
-    }
-
-    return {
-      commandName,
-      difficulty: relay.difficulty,
-      requestedTarget: nickname ? nickname.trim() : steamId.trim(),
-      payload: nickname
-        ? `/dsrequest overdrives nickname:${nickname.trim()}`
-        : `/dsrequest overdrives steamid:${steamId.trim()}`,
-      hidden,
-      raw,
-    };
+    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
   }
 
-  const selectedDifficulty = interaction.options.getString('difficulty');
-  const nickname = interaction.options.getString('nickname');
-  const steamId = interaction.options.getString('steamid');
-  const providedOptions = [selectedDifficulty, nickname, steamId].filter(Boolean).length;
-
-  if (providedOptions !== 1) {
-    throw new Error('Use exactly one option for /rank: difficulty, nickname, or steamid.');
+  if (commandName === 'rank') {
+    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
   }
 
-  if (steamId && !isValidSteamId64(steamId)) {
-    throw new Error('Invalid steamid. Provide a valid SteamID64.');
-  }
-
-  if (selectedDifficulty) {
+  if (commandName === 'rankings') {
+    const selectedDifficulty = interaction.options.getString('difficulty', true);
     if (!ensureValidDifficulty(selectedDifficulty)) {
       throw new Error('Selected difficulty is not active right now.');
     }
@@ -1885,22 +2005,7 @@ function buildRelayRequest(interaction) {
     };
   }
 
-  const relay = getDefaultRelay();
-
-  if (!relay) {
-    throw new Error('No active difficulties are available right now.');
-  }
-
-  return {
-    commandName,
-    difficulty: relay.difficulty,
-    requestedTarget: nickname ? nickname.trim() : steamId.trim(),
-    payload: nickname
-      ? `/dsrequest rank nickname:${nickname.trim()}`
-      : `/dsrequest rank steamid:${steamId.trim()}`,
-    hidden,
-    raw,
-  };
+  throw new Error(`Unsupported command: /${commandName}`);
 }
 
 function normalizePerkName(value) {
@@ -2447,7 +2552,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
 }
 
 function formatRankResponse(request, responsePayload) {
-  if (request.commandName !== 'rank') {
+  if (request.commandName !== 'rank' && request.commandName !== 'rankings') {
     return responsePayload;
   }
 
@@ -2557,7 +2662,7 @@ function formatResponse(interaction, request, responsePayload) {
     formattedResponse = formatVipInfoResponse(request, responsePayload);
   } else if (request.commandName === 'overdrives') {
     formattedResponse = formatOverdrivesResponse(request, responsePayload);
-  } else if (request.commandName === 'rank') {
+  } else if (request.commandName === 'rank' || request.commandName === 'rankings') {
     formattedResponse = formatRankResponse(request, responsePayload);
   }
 
@@ -2585,14 +2690,16 @@ async function postResponse(interaction, request, responsePayload, successMessag
   );
 
   if (request.hidden) {
-    await interaction.editReply({
+    await editDiscordReply(interaction, {
       content: formattedResponse,
     });
     return;
   }
 
-  await interaction.channel.send(formattedResponse);
-  await interaction.editReply({
+  await sendDiscordMessage(interaction.channel, {
+    content: formattedResponse,
+  });
+  await editDiscordReply(interaction, {
     content: successMessage,
   });
 }
@@ -2625,7 +2732,7 @@ async function processRelayQueue(difficulty) {
         }
 
         if (job.wasQueued) {
-          await job.interaction.editReply({
+          await editDiscordReply(job.interaction, {
             content: `Your request for "${difficulty}" is now being processed...`,
           });
         }
@@ -2639,7 +2746,7 @@ async function processRelayQueue(difficulty) {
         );
       } catch (error) {
         logError(`Failed to process command: ${error.message || error}`);
-        await job.interaction.editReply({
+        await editDiscordReply(job.interaction, {
           content: error.message || 'Failed to process the request.',
         }).catch(() => {});
       } finally {
@@ -2668,7 +2775,7 @@ async function enqueueRelayRequest(interaction, request) {
   const queuePosition = queue.length + (processingDifficulties.has(request.difficulty) ? 1 : 0);
 
   if (isAlreadyBusy) {
-    await interaction.editReply({
+    await editDiscordReply(interaction, {
       content: `Please wait until the previous request for "${request.difficulty}" is done. Your request is queued${queuePosition > 1 ? ` (position ${queuePosition})` : ''}.`,
     });
   }
@@ -2723,6 +2830,15 @@ function buildExampleRequest(interaction) {
     };
   }
 
+  if (commandName === 'target') {
+    return {
+      commandName,
+      responsePayload,
+      hidden,
+      raw,
+    };
+  }
+
   return {
     commandName,
     difficulty,
@@ -2734,9 +2850,27 @@ function buildExampleRequest(interaction) {
 }
 
 async function handleExampleCommand(interaction, request) {
+  if (request.commandName === 'target') {
+    try {
+      const target = await resolvePlayerTarget(request.responsePayload);
+      await editDiscordReply(interaction, {
+        content: formatTargetResolutionExample(request.responsePayload, target),
+      });
+    } catch (error) {
+      await editDiscordReply(interaction, {
+        content: [
+          `Input: ${suppressDiscordLinkEmbeds(request.responsePayload)}`,
+          'Target resolution failed.',
+          `Reason: ${error.message || error}`,
+        ].join('\n'),
+      });
+    }
+    return;
+  }
+
   if (request.commandName === 'vote') {
     await handleKf2VotePayload(buildExampleVoteConfig(request.difficulty), request.votePayload);
-    await interaction.editReply({
+    await editDiscordReply(interaction, {
       content: `Processed example vote response for "${getDifficultyLabel(request.difficulty || getActiveDifficulties()[0] || 'normal')}".`,
     });
     return;
@@ -2877,7 +3011,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   try {
-    await interaction.deferReply({
+    await deferDiscordReply(interaction, {
       flags: MessageFlags.Ephemeral,
     });
 
@@ -2885,7 +3019,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const requestedHidden = interaction.options.getBoolean('hidden') || false;
       const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
       if (!availabilityResult.allowed) {
-        await interaction.editReply({
+        await editDiscordReply(interaction, {
           content: availabilityResult.message,
         });
         return;
@@ -2894,7 +3028,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const request = buildExampleRequest(interaction);
       const tokenResult = consumeCommandToken(interaction, request.hidden);
       if (!tokenResult.allowed) {
-        await interaction.editReply({
+        await editDiscordReply(interaction, {
           content: tokenResult.message,
         });
         return;
@@ -2908,16 +3042,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const requestedHidden = interaction.options.getBoolean('hidden') || false;
     const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
     if (!availabilityResult.allowed) {
-      await interaction.editReply({
+      await editDiscordReply(interaction, {
         content: availabilityResult.message,
       });
       return;
     }
 
-    const request = buildRelayRequest(interaction);
+    const request = await buildRelayRequest(interaction);
     const tokenResult = consumeCommandToken(interaction, request.hidden);
     if (!tokenResult.allowed) {
-      await interaction.editReply({
+      await editDiscordReply(interaction, {
         content: tokenResult.message,
       });
       return;
@@ -2936,18 +3070,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
     };
 
     if (interaction.deferred) {
-      await interaction.editReply({
+      await editDiscordReply(interaction, {
         content: response.content,
       }).catch(() => {});
       return;
     }
 
     if (interaction.replied) {
-      await interaction.followUp(response).catch(() => {});
+      await followUpDiscordInteraction(interaction, response).catch(() => {});
       return;
     }
 
-    await interaction.reply(response).catch(() => {});
+    await replyDiscordInteraction(interaction, response).catch(() => {});
   }
 });
 
