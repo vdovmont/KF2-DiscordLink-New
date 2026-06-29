@@ -34,6 +34,8 @@ let KF2_KICK_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2KickVoteDiscordC
 let KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2PauseSkipVoteDiscordChannelIds;
 let KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2MonthlyRewardDiscordChannelIds;
 let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
+let KF2_KICK_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2KickVotePassPercent;
+let KF2_PAUSE_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseSkipVotePassPercent;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
@@ -302,6 +304,15 @@ function parsePositiveInteger(value, defaultValue) {
   return parsedValue > 0 ? parsedValue : defaultValue;
 }
 
+function parsePercent(value, defaultValue) {
+  const parsedValue = parseInteger(value, defaultValue);
+  if (!Number.isInteger(parsedValue)) {
+    return defaultValue;
+  }
+
+  return Math.min(100, Math.max(0, parsedValue));
+}
+
 function secondsToMilliseconds(seconds) {
   return seconds * 1000;
 }
@@ -339,6 +350,8 @@ function loadRuntimeConfig(env = process.env) {
     kf2PauseSkipVoteDiscordChannelIds: parseChannelIds(env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS),
     kf2MonthlyRewardDiscordChannelIds: parseChannelIds(env.KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS),
     kf2VoteTimeoutMs: parseSecondsToMilliseconds(env.KF2_VOTE_TIMEOUT_SECONDS, 30),
+    kf2KickVotePassPercent: parsePercent(env.KF2_KICK_VOTE_PASS_PERCENT, 100),
+    kf2PauseSkipVotePassPercent: parsePercent(env.KF2_PAUSE_SKIP_VOTE_PASS_PERCENT, 66),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
@@ -360,6 +373,8 @@ function applyRuntimeConfig(config) {
   KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = config.kf2PauseSkipVoteDiscordChannelIds;
   KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS = config.kf2MonthlyRewardDiscordChannelIds;
   KF2_VOTE_TIMEOUT_MS = config.kf2VoteTimeoutMs;
+  KF2_KICK_VOTE_PASS_PERCENT = config.kf2KickVotePassPercent;
+  KF2_PAUSE_SKIP_VOTE_PASS_PERCENT = config.kf2PauseSkipVotePassPercent;
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
   SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
@@ -1405,6 +1420,10 @@ function quoteVotePlayerName(value) {
   return `"${normalizeVotePlayerName(value) || 'Unknown'}"`;
 }
 
+function getVotePlayerKey(playerName) {
+  return normalizeVotePlayerName(playerName).toLowerCase();
+}
+
 function getVoteStateKey(config) {
   return config.difficulty;
 }
@@ -1446,21 +1465,134 @@ function getVoteChannelIds(config, subtype) {
     : KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS;
 }
 
+function getVotePassThreshold(state) {
+  return state.subtype === 'kick'
+    ? KF2_KICK_VOTE_PASS_PERCENT
+    : KF2_PAUSE_SKIP_VOTE_PASS_PERCENT;
+}
+
+function getVotePassStats(state) {
+  const targetKey = state.targetKey || '';
+  const countedCurrentKeys = [...state.currentPlayerKeys]
+    .filter((key) => state.initialPlayerKeys.has(key) && key !== targetKey);
+  const countedLeftVotedKeys = [...state.leftPlayerKeys]
+    .filter((key) => state.initialPlayerKeys.has(key) && key !== targetKey && state.votes.has(key));
+  const denominator = Math.max(1, countedCurrentKeys.length);
+  const positiveVoteKeys = new Set([...countedCurrentKeys, ...countedLeftVotedKeys]);
+  const positiveCount = [...positiveVoteKeys]
+    .filter((key) => state.votes.get(key) === true)
+    .length;
+
+  return {
+    positivePercent: Math.min(100, Math.floor((positiveCount / denominator) * 100)),
+    requiredPercent: getVotePassThreshold(state),
+  };
+}
+
+function getVoteMark(state, player, options = {}) {
+  if (options.fixedMark) {
+    return options.fixedMark;
+  }
+
+  if (options.forceUnknown) {
+    return '❔';
+  }
+
+  const voteValue = state.votes.get(player.key);
+  return voteValue === true ? '✅' : voteValue === false ? '❌' : '❔';
+}
+
+function appendVotePlayerSection(lines, title, players, state, options = {}) {
+  if (players.length === 0) {
+    return;
+  }
+
+  if (lines.length > 0 && lines[lines.length - 1] !== '') {
+    lines.push('');
+  }
+
+  lines.push(`\`${title}\``);
+  for (const player of players) {
+    lines.push(`${getVoteMark(state, player, options)}\t${player.name}`);
+  }
+}
+
+function sortVotePlayersByOriginalOrder(state, players) {
+  return [...players].sort((left, right) =>
+    (state.playerOrder.get(left.key) ?? Number.MAX_SAFE_INTEGER)
+      - (state.playerOrder.get(right.key) ?? Number.MAX_SAFE_INTEGER));
+}
+
+function getCurrentVotePlayers(state) {
+  const targetKey = state.targetKey || '';
+  return sortVotePlayersByOriginalOrder(
+    state,
+    state.players.filter((player) =>
+      state.currentPlayerKeys.has(player.key)
+      && state.initialPlayerKeys.has(player.key)
+      && player.key !== targetKey),
+  );
+}
+
+function getLeftVotePlayers(state) {
+  const targetKey = state.targetKey || '';
+  return sortVotePlayersByOriginalOrder(
+    state,
+    state.players.filter((player) =>
+      state.leftPlayerKeys.has(player.key)
+      && state.initialPlayerKeys.has(player.key)
+      && player.key !== targetKey),
+  );
+}
+
+function getJoinedVotePlayers(state) {
+  const targetKey = state.targetKey || '';
+  return sortVotePlayersByOriginalOrder(
+    state,
+    state.players.filter((player) =>
+      state.joinedPlayerKeys.has(player.key)
+      && player.key !== targetKey),
+  );
+}
+
+function getTargetVotePlayer(state) {
+  if (!state.targetKey) {
+    return null;
+  }
+
+  return state.players.find((player) => player.key === state.targetKey)
+    || { key: state.targetKey, name: state.target || 'Unknown' };
+}
+
+function getTargetVotePlayers(state) {
+  const targetPlayer = getTargetVotePlayer(state);
+  return targetPlayer ? [targetPlayer] : [];
+}
+
 function formatVoteMessage(state) {
   const separator = '-----------------------------------------------';
   const lines = [
     separator,
     buildVoteHeader(state),
+    '',
   ];
 
-  for (const player of state.players) {
-    const voteValue = state.votes.get(player.key);
-    const mark = voteValue === true ? '✅' : voteValue === false ? '❌' : '❔';
-    lines.push(`${mark}\t${player.name}`);
-  }
+  appendVotePlayerSection(lines, 'Current players:', getCurrentVotePlayers(state), state);
+  appendVotePlayerSection(lines, 'Players who left:', getLeftVotePlayers(state), state);
+  appendVotePlayerSection(lines, 'Newly joined players:', getJoinedVotePlayers(state), state, {
+    forceUnknown: true,
+  });
+
+  appendVotePlayerSection(lines, 'Target player:', getTargetVotePlayers(state), state, {
+    fixedMark: '❌',
+  });
 
   if (typeof state.result === 'boolean') {
-    lines.push(`Result: ${formatVoteBoolean(state.result)}`);
+    const stats = getVotePassStats(state);
+    if (lines.length > 0 && lines[lines.length - 1] !== '') {
+      lines.push('');
+    }
+    lines.push(`Result: (${stats.positivePercent}%/${stats.requiredPercent}%) ${formatVoteBoolean(state.result)}`);
   }
 
   lines.push(separator);
@@ -1489,7 +1621,7 @@ function addVotePlayerIfMissing(state, playerName) {
     return null;
   }
 
-  const key = name.toLowerCase();
+  const key = getVotePlayerKey(name);
   const existingPlayer = state.players.find((player) => player.key === key);
   if (existingPlayer) {
     return existingPlayer;
@@ -1497,7 +1629,117 @@ function addVotePlayerIfMissing(state, playerName) {
 
   const player = { key, name };
   state.players.push(player);
+  state.playerOrder.set(key, state.playerOrder.size);
   return player;
+}
+
+function getVotePayloadPlayerNames(payload) {
+  if (!Array.isArray(payload.players)) {
+    return [];
+  }
+
+  return payload.players
+    .map((player) => normalizeVotePlayerName(player?.name || player))
+    .filter(Boolean);
+}
+
+function syncVotePlayerSnapshot(state, payload, options = {}) {
+  const playerNames = getVotePayloadPlayerNames(payload);
+  if (playerNames.length === 0) {
+    return;
+  }
+
+  const snapshotKeys = new Set();
+  for (const playerName of playerNames) {
+    const player = addVotePlayerIfMissing(state, playerName);
+    if (player) {
+      snapshotKeys.add(player.key);
+    }
+  }
+
+  if (state.target) {
+    const targetPlayer = addVotePlayerIfMissing(state, state.target);
+    state.targetKey = targetPlayer?.key || getVotePlayerKey(state.target);
+  }
+
+  if (options.initial) {
+    state.initialPlayerKeys = new Set(snapshotKeys);
+    state.currentPlayerKeys = new Set(snapshotKeys);
+    state.leftPlayerKeys = new Set();
+    state.joinedPlayerKeys = new Set();
+    return;
+  }
+
+  state.currentPlayerKeys = snapshotKeys;
+
+  for (const key of state.initialPlayerKeys) {
+    if (snapshotKeys.has(key)) {
+      state.leftPlayerKeys.delete(key);
+    } else {
+      state.leftPlayerKeys.add(key);
+    }
+  }
+
+  for (const key of snapshotKeys) {
+    if (!state.initialPlayerKeys.has(key) && key !== state.targetKey) {
+      state.joinedPlayerKeys.add(key);
+    }
+  }
+}
+
+function parseVotePlayerConnectionLog(content) {
+  const text = String(content || '').trim();
+  const leftMatch = text.match(/^(.+?) left the game\.$/i);
+  if (leftMatch) {
+    return {
+      action: 'left',
+      playerName: normalizeVotePlayerName(leftMatch[1]),
+    };
+  }
+
+  const joinedMatch = text.match(/^(.+?) entered the game\.$/i);
+  if (joinedMatch) {
+    return {
+      action: 'joined',
+      playerName: normalizeVotePlayerName(joinedMatch[1]),
+    };
+  }
+
+  return null;
+}
+
+function updateVotePlayerConnectionFromChat(config, chatMessage) {
+  const difficulty = getVoteStateKey(config);
+  const state = activeVotes.get(difficulty);
+  if (!state) {
+    return;
+  }
+
+  const connectionLog = parseVotePlayerConnectionLog(chatMessage.content);
+  if (!connectionLog?.playerName) {
+    return;
+  }
+
+  const player = addVotePlayerIfMissing(state, connectionLog.playerName);
+  if (!player) {
+    return;
+  }
+
+  if (connectionLog.action === 'left') {
+    state.currentPlayerKeys.delete(player.key);
+    if (state.initialPlayerKeys.has(player.key)) {
+      state.leftPlayerKeys.add(player.key);
+    }
+  } else if (connectionLog.action === 'joined') {
+    state.currentPlayerKeys.add(player.key);
+    if (state.initialPlayerKeys.has(player.key)) {
+      state.leftPlayerKeys.delete(player.key);
+    } else if (player.key !== state.targetKey) {
+      state.joinedPlayerKeys.add(player.key);
+    }
+  }
+
+  queueVoteMessageEdit(state);
 }
 
 async function startVoteState(config, payload) {
@@ -1511,7 +1753,13 @@ async function startVoteState(config, payload) {
     subtype: payload.subtype,
     initiator,
     target: normalizeVotePlayerName(payload.target),
+    targetKey: '',
     players: [],
+    playerOrder: new Map(),
+    initialPlayerKeys: new Set(),
+    currentPlayerKeys: new Set(),
+    leftPlayerKeys: new Set(),
+    joinedPlayerKeys: new Set(),
     votes: new Map(),
     result: null,
     messages: [],
@@ -1519,14 +1767,22 @@ async function startVoteState(config, payload) {
     editPromise: Promise.resolve(),
   };
 
-  if (Array.isArray(payload.players)) {
-    for (const player of payload.players) {
-      addVotePlayerIfMissing(state, player?.name);
-    }
+  syncVotePlayerSnapshot(state, payload, { initial: true });
+
+  if (state.target) {
+    const targetPlayer = addVotePlayerIfMissing(state, state.target);
+    state.targetKey = targetPlayer?.key || getVotePlayerKey(state.target);
   }
 
-  addVotePlayerIfMissing(state, initiator);
-  state.votes.set(initiator.toLowerCase(), true);
+  const initiatorPlayer = addVotePlayerIfMissing(state, initiator);
+  if (initiatorPlayer && state.initialPlayerKeys.size === 0) {
+    state.initialPlayerKeys.add(initiatorPlayer.key);
+    state.currentPlayerKeys.add(initiatorPlayer.key);
+  } else if (initiatorPlayer && !state.joinedPlayerKeys.has(initiatorPlayer.key)) {
+    state.initialPlayerKeys.add(initiatorPlayer.key);
+    state.currentPlayerKeys.add(initiatorPlayer.key);
+  }
+  state.votes.set(getVotePlayerKey(initiator), true);
 
   state.timeout = setTimeout(() => {
     clearVoteState(difficulty);
@@ -1577,10 +1833,16 @@ function updateVoteState(config, payload) {
     return;
   }
 
+  syncVotePlayerSnapshot(state, payload);
   const player = addVotePlayerIfMissing(state, payload.player);
   if (!player || typeof payload.value !== 'boolean') {
     logWarnConfig(`Received invalid vote update for "${difficulty}".`);
     return;
+  }
+
+  if (!state.initialPlayerKeys.has(player.key) && player.key !== state.targetKey) {
+    state.joinedPlayerKeys.add(player.key);
+    state.currentPlayerKeys.add(player.key);
   }
 
   state.votes.set(player.key, payload.value);
@@ -1600,6 +1862,7 @@ function finishVoteState(config, payload) {
     return;
   }
 
+  syncVotePlayerSnapshot(state, payload);
   state.result = payload.value;
   queueVoteMessageEdit(state);
   clearVoteState(difficulty);
@@ -2025,6 +2288,7 @@ class Kf2Connection {
 
     try {
       const chatMessage = parseKf2ChatPayload(message, this.config);
+      updateVotePlayerConnectionFromChat(this.config, chatMessage);
       void forwardKf2ChatToDiscord(this.config, chatMessage);
     } catch (error) {
       logWarn(`Failed to process KF2 message from "${this.config.name}": ${error.message || error}`);
