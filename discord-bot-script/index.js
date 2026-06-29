@@ -35,7 +35,8 @@ let KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2PauseSkipV
 let KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2MonthlyRewardDiscordChannelIds;
 let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
 let KF2_KICK_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2KickVotePassPercent;
-let KF2_PAUSE_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseSkipVotePassPercent;
+let KF2_PAUSE_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseVotePassPercent;
+let KF2_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2SkipVotePassPercent;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
@@ -350,8 +351,9 @@ function loadRuntimeConfig(env = process.env) {
     kf2PauseSkipVoteDiscordChannelIds: parseChannelIds(env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS),
     kf2MonthlyRewardDiscordChannelIds: parseChannelIds(env.KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS),
     kf2VoteTimeoutMs: parseSecondsToMilliseconds(env.KF2_VOTE_TIMEOUT_SECONDS, 30),
-    kf2KickVotePassPercent: parsePercent(env.KF2_KICK_VOTE_PASS_PERCENT, 100),
-    kf2PauseSkipVotePassPercent: parsePercent(env.KF2_PAUSE_SKIP_VOTE_PASS_PERCENT, 66),
+    kf2KickVotePassPercent: parsePercent(env.KF2_KICK_VOTE_PASS_PERCENT, 66),
+    kf2PauseVotePassPercent: parsePercent(env.KF2_PAUSE_VOTE_PASS_PERCENT, 66),
+    kf2SkipVotePassPercent: parsePercent(env.KF2_SKIP_VOTE_PASS_PERCENT, 100),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
@@ -374,7 +376,8 @@ function applyRuntimeConfig(config) {
   KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS = config.kf2MonthlyRewardDiscordChannelIds;
   KF2_VOTE_TIMEOUT_MS = config.kf2VoteTimeoutMs;
   KF2_KICK_VOTE_PASS_PERCENT = config.kf2KickVotePassPercent;
-  KF2_PAUSE_SKIP_VOTE_PASS_PERCENT = config.kf2PauseSkipVotePassPercent;
+  KF2_PAUSE_VOTE_PASS_PERCENT = config.kf2PauseVotePassPercent;
+  KF2_SKIP_VOTE_PASS_PERCENT = config.kf2SkipVotePassPercent;
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
   SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
@@ -1488,9 +1491,15 @@ function getVoteChannelIds(config, subtype) {
 }
 
 function getVotePassThreshold(state) {
-  return state.subtype === 'kick'
-    ? KF2_KICK_VOTE_PASS_PERCENT
-    : KF2_PAUSE_SKIP_VOTE_PASS_PERCENT;
+  if (state.subtype === 'skip') {
+    return KF2_SKIP_VOTE_PASS_PERCENT;
+  }
+
+  if (state.subtype === 'pause') {
+    return KF2_PAUSE_VOTE_PASS_PERCENT;
+  }
+
+  return KF2_KICK_VOTE_PASS_PERCENT;
 }
 
 function getVotePassStats(state) {
