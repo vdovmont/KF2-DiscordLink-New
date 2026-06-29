@@ -32,6 +32,7 @@ let KF2_CONNECT_TIMEOUT_MS = initialRuntimeConfig.kf2ConnectTimeoutMs;
 let KF2_REQUEST_TIMEOUT_MS = initialRuntimeConfig.kf2RequestTimeoutMs;
 let KF2_KICK_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2KickVoteDiscordChannelIds;
 let KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2PauseSkipVoteDiscordChannelIds;
+let KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS = initialRuntimeConfig.kf2MonthlyRewardDiscordChannelIds;
 let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
@@ -120,6 +121,9 @@ const {
 const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'rankings', 'example'];
 const FORMAT_RESPONSE_ERROR_MESSAGE = 'Oh-oh: something went wrong with response from KF2 server. Please use "raw" option for detailed response.';
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
+const DISCORD_MESSAGE_MAX_LENGTH = 2000;
+const DISCORD_ZERO_WIDTH_SPACE = '\u200B';
+const MONTHLY_RANKING_REWARD_CHUNK_PREFIX = `${DISCORD_ZERO_WIDTH_SPACE}\n`;
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
 const RANK_DISPLAY_ORDER = [
   { key: 'normal', label: 'Normal' },
@@ -137,24 +141,109 @@ function withSuppressedEmbeds(options) {
   return messageOptions;
 }
 
-function sendDiscordMessage(channel, options) {
-  return channel.send(withSuppressedEmbeds(options));
+function splitDiscordMessage(content, maxLength = DISCORD_MESSAGE_MAX_LENGTH) {
+  const chunks = [];
+  let currentChunk = '';
+
+  for (const line of String(content).split('\n')) {
+    if (line.length > maxLength) {
+      if (currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = '';
+      }
+
+      for (let index = 0; index < line.length; index += maxLength) {
+        chunks.push(line.slice(index, index + maxLength));
+      }
+      continue;
+    }
+
+    const nextLine = currentChunk ? `\n${line}` : line;
+    if (currentChunk && currentChunk.length + nextLine.length > maxLength) {
+      chunks.push(currentChunk);
+      currentChunk = line;
+      continue;
+    }
+
+    currentChunk += nextLine;
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+function splitDiscordMessageOptions(options, maxLength = DISCORD_MESSAGE_MAX_LENGTH) {
+  const messageOptions = withSuppressedEmbeds(options);
+
+  if (typeof messageOptions.content !== 'string' || messageOptions.content.length <= maxLength) {
+    return [messageOptions];
+  }
+
+  return splitDiscordMessage(messageOptions.content, maxLength)
+    .map((content) => ({
+      ...messageOptions,
+      content,
+    }));
+}
+
+function withInteractionFollowUpVisibility(interaction, options) {
+  if (!interaction.ephemeral || ((options.flags || 0) & MessageFlags.Ephemeral)) {
+    return options;
+  }
+
+  return {
+    ...options,
+    flags: (options.flags || 0) | MessageFlags.Ephemeral,
+  };
+}
+
+async function sendDiscordMessage(channel, options) {
+  const messages = [];
+
+  for (const messageOptions of splitDiscordMessageOptions(options)) {
+    messages.push(await channel.send(messageOptions));
+  }
+
+  return messages[0] || null;
 }
 
 function editDiscordMessage(message, options) {
   return message.edit(withSuppressedEmbeds(options));
 }
 
-function replyDiscordInteraction(interaction, options) {
-  return interaction.reply(withSuppressedEmbeds(options));
+async function replyDiscordInteraction(interaction, options) {
+  const [firstOptions, ...followUpOptions] = splitDiscordMessageOptions(options);
+  const response = await interaction.reply(firstOptions);
+
+  for (const followUpOptionsItem of followUpOptions) {
+    await interaction.followUp(withInteractionFollowUpVisibility(interaction, followUpOptionsItem));
+  }
+
+  return response;
 }
 
-function editDiscordReply(interaction, options) {
-  return interaction.editReply(withSuppressedEmbeds(options));
+async function editDiscordReply(interaction, options) {
+  const [firstOptions, ...followUpOptions] = splitDiscordMessageOptions(options);
+  const response = await interaction.editReply(firstOptions);
+
+  for (const followUpOptionsItem of followUpOptions) {
+    await interaction.followUp(withInteractionFollowUpVisibility(interaction, followUpOptionsItem));
+  }
+
+  return response;
 }
 
-function followUpDiscordInteraction(interaction, options) {
-  return interaction.followUp(withSuppressedEmbeds(options));
+async function followUpDiscordInteraction(interaction, options) {
+  const responses = [];
+
+  for (const messageOptions of splitDiscordMessageOptions(options)) {
+    responses.push(await interaction.followUp(withInteractionFollowUpVisibility(interaction, messageOptions)));
+  }
+
+  return responses[0] || null;
 }
 
 function deferDiscordReply(interaction, options) {
@@ -248,6 +337,7 @@ function loadRuntimeConfig(env = process.env) {
     kf2RequestTimeoutMs: parseSecondsToMilliseconds(env.KF2_REQUEST_TIMEOUT_SECONDS, 60),
     kf2KickVoteDiscordChannelIds: parseChannelIds(env.KF2_KICK_VOTE_DISCORD_CHANNEL_IDS),
     kf2PauseSkipVoteDiscordChannelIds: parseChannelIds(env.KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS),
+    kf2MonthlyRewardDiscordChannelIds: parseChannelIds(env.KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS),
     kf2VoteTimeoutMs: parseSecondsToMilliseconds(env.KF2_VOTE_TIMEOUT_SECONDS, 30),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
@@ -268,6 +358,7 @@ function applyRuntimeConfig(config) {
   KF2_REQUEST_TIMEOUT_MS = config.kf2RequestTimeoutMs;
   KF2_KICK_VOTE_DISCORD_CHANNEL_IDS = config.kf2KickVoteDiscordChannelIds;
   KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS = config.kf2PauseSkipVoteDiscordChannelIds;
+  KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS = config.kf2MonthlyRewardDiscordChannelIds;
   KF2_VOTE_TIMEOUT_MS = config.kf2VoteTimeoutMs;
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
@@ -925,6 +1016,7 @@ const commandDefinitions = [
             { name: 'overdrives', value: 'overdrives' },
             { name: 'rank', value: 'rank' },
             { name: 'rankings', value: 'rankings' },
+            { name: 'month-ranking-rewards', value: 'month-ranking-rewards' },
             { name: 'target', value: 'target' },
             { name: 'vote', value: 'vote' },
           ),
@@ -1202,10 +1294,15 @@ async function sendWebhookMessageNow(webhookUrl, payload) {
 }
 
 async function sendWebhookMessage(webhookUrl, payload) {
+  const payloadChunks = splitDiscordMessageOptions(payload);
   const previousSend = webhookSendQueues.get(webhookUrl) || Promise.resolve();
   const nextSend = previousSend
     .catch(() => {})
-    .then(() => sendWebhookMessageNow(webhookUrl, payload));
+    .then(async () => {
+      for (const payloadChunk of payloadChunks) {
+        await sendWebhookMessageNow(webhookUrl, payloadChunk);
+      }
+    });
 
   const queuedSend = nextSend.finally(() => {
     if (webhookSendQueues.get(webhookUrl) === queuedSend) {
@@ -1277,6 +1374,15 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
 function parseVotePayload(message) {
   const parsedPayload = parseRelayJsonPayload(message);
   if (!parsedPayload || parsedPayload.type !== 'vote' || typeof parsedPayload.subtype !== 'string') {
+    return null;
+  }
+
+  return parsedPayload;
+}
+
+function parseMonthRankingRewardsPayload(message) {
+  const parsedPayload = parseRelayJsonPayload(message);
+  if (!parsedPayload || parsedPayload.type !== 'month-ranking-rewards') {
     return null;
   }
 
@@ -1518,6 +1624,257 @@ async function handleKf2VotePayload(config, payload) {
   logWarnConfig(`Received unknown vote subtype "${payload.subtype}" from ${config.name}.`);
 }
 
+function formatRankNumber(value) {
+  const numberValue = Number.parseInt(value, 10);
+  if (!Number.isInteger(numberValue)) {
+    return String(value || '');
+  }
+
+  return String(numberValue);
+}
+
+function getMonthlyVipDaysForRank(rank) {
+  const rankValue = Number.parseInt(rank, 10);
+  if (!Number.isInteger(rankValue)) {
+    return 0;
+  }
+
+  return Math.max(11 - rankValue, 0);
+}
+
+function normalizeSteamIdText(value) {
+  return String(value || '').trim();
+}
+
+async function resolveSteamIdDisplayName(steamId, cache) {
+  const normalizedSteamId = normalizeSteamIdText(steamId);
+  if (!normalizedSteamId) {
+    return 'Unknown';
+  }
+
+  if (cache.has(normalizedSteamId)) {
+    return cache.get(normalizedSteamId);
+  }
+
+  let displayName = normalizedSteamId;
+  if (isValidSteamId64(normalizedSteamId) && activeSteamApiKey) {
+    try {
+      const player = await ensureSteamIdExists(normalizedSteamId);
+      displayName = formatSteamProfileDisplay(normalizedSteamId, player);
+    } catch (error) {
+      logWarn(`Could not resolve Steam profile ${normalizedSteamId}: ${error.message || error}`);
+    }
+  }
+
+  cache.set(normalizedSteamId, displayName);
+  return displayName;
+}
+
+async function buildMonthlyRewardDisplayCache(payload) {
+  const cache = new Map();
+  const steamIds = new Set();
+
+  for (const difficulty of Object.values(payload.difficulties || {})) {
+    if (!Array.isArray(difficulty?.players)) {
+      continue;
+    }
+
+    for (const player of difficulty.players) {
+      steamIds.add(normalizeSteamIdText(player?.steamid));
+    }
+  }
+
+  for (const player of payload.rewards?.players || []) {
+    steamIds.add(normalizeSteamIdText(player?.steamid));
+  }
+
+  for (const steamId of steamIds) {
+    if (steamId) {
+      await resolveSteamIdDisplayName(steamId, cache);
+    }
+  }
+
+  return cache;
+}
+
+function getMonthlyRewardDifficultyEntries(payload) {
+  const difficultyEntries = Object.entries(payload.difficulties || {})
+    .filter(([, difficulty]) => Array.isArray(difficulty?.players))
+    .sort(([left], [right]) => {
+      const leftIndex = DIFFICULTY_ORDER.indexOf(left);
+      const rightIndex = DIFFICULTY_ORDER.indexOf(right);
+      if (leftIndex !== -1 || rightIndex !== -1) {
+        return (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex)
+          - (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex);
+      }
+
+      return left.localeCompare(right);
+    });
+
+  return difficultyEntries;
+}
+
+async function buildMonthlyRankingRewardBlocks(payload) {
+  const displayCache = await buildMonthlyRewardDisplayCache(payload);
+  const intro = [
+    'Time UP ! Monthly VIP rewards have been delivered and a new month has started. Monthly rank score is now reset',
+    'Sum up for Scores, ranks and rewards:',
+  ].join('\n');
+  const difficultySections = [];
+  const difficultyEntries = getMonthlyRewardDifficultyEntries(payload);
+
+  for (const [difficultyKey, difficulty] of difficultyEntries) {
+    const lines = [`${getDifficultyLabel(difficultyKey)}:`];
+    const players = difficulty.players
+      .map((player) => ({
+        steamId: normalizeSteamIdText(player?.steamid),
+        rank: Number.parseInt(player?.rank, 10),
+        points: Number.parseInt(player?.points, 10),
+      }))
+      .filter((player) => player.steamId && Number.isInteger(player.rank))
+      .sort((left, right) => left.rank - right.rank);
+
+    if (players.length === 0) {
+      lines.push('No ranked players.');
+      difficultySections.push(lines.join('\n'));
+      continue;
+    }
+
+    const rows = await Promise.all(players.map(async (player) => {
+      const rewardDays = getMonthlyVipDaysForRank(player.rank);
+      return {
+        rank: formatRankNumber(player.rank),
+        points: `${Number.isInteger(player.points) ? player.points : 0} points`,
+        rewardDays: rewardDays === 0 ? '' : `+${rewardDays}`,
+        dayLabel: rewardDays === 0 ? '' : rewardDays === 1 ? 'day' : 'days',
+        player: await resolveSteamIdDisplayName(player.steamId, displayCache),
+      };
+    }));
+    const rankWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.rank)));
+    const pointsWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.points)));
+    const rewardDaysWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.rewardDays)));
+    const dayLabelWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.dayLabel)));
+
+    for (const row of rows) {
+      const statText = `${padEndByDiscordTextWidth(row.rank, rankWidth)}  `
+        + `${padEndByDiscordTextWidth(row.points, pointsWidth)}  `
+        + `${padEndByDiscordTextWidth(row.rewardDays, rewardDaysWidth)} `
+        + padEndByDiscordTextWidth(row.dayLabel, dayLabelWidth);
+      lines.push(`\`${statText}\` ${row.player}`);
+    }
+
+    difficultySections.push(lines.join('\n'));
+  }
+
+  const rewardLines = [];
+  const rewardPlayers = Array.isArray(payload.rewards?.players) ? payload.rewards.players : [];
+  rewardLines.push('VIP days delivered to players:');
+
+  if (rewardPlayers.length === 0) {
+    rewardLines.push('No VIP rewards delivered.');
+  } else {
+    const rows = await Promise.all(rewardPlayers.map(async (player) => {
+      const days = Math.max(0, Number.parseInt(player?.days, 10) || 0);
+      return {
+        days: `+${days}`,
+        dayLabel: days === 1 ? 'Day' : 'Days',
+        player: await resolveSteamIdDisplayName(player?.steamid, displayCache),
+      };
+    }));
+    const daysWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.days)));
+    const dayLabelWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.dayLabel)));
+
+    for (const row of rows) {
+      const statText = `${padEndByDiscordTextWidth(row.days, daysWidth)} `
+        + padEndByDiscordTextWidth(row.dayLabel, dayLabelWidth);
+      rewardLines.push(`\`${statText}\` ${row.player}`);
+    }
+  }
+
+  const note = 'Note: Delivered VIP are acting as Extension to current VIP applied. If you have no VIP running then delivered reward will act as a Special Bronze VIP. The Special Bronze VIP act as bronze VIP with a server level limitation bypass (Designated with a <3 near your name in game)';
+
+  return {
+    intro,
+    difficultySections,
+    rewards: rewardLines.join('\n'),
+    note,
+  };
+}
+
+function splitMonthlyRankingRewardCombinedGroup(primarySection, secondarySection, maxLength = DISCORD_MESSAGE_MAX_LENGTH) {
+  const primary = String(primarySection || '').trim();
+  const secondary = String(secondarySection || '').trim();
+
+  if (!primary) {
+    return splitDiscordMessage(secondary, maxLength);
+  }
+
+  if (!secondary) {
+    return splitDiscordMessage(primary, maxLength);
+  }
+
+  const combined = `${primary}\n\n${secondary}`;
+  if (combined.length <= maxLength) {
+    return [combined];
+  }
+
+  return [
+    ...splitDiscordMessage(primary, maxLength),
+    ...splitDiscordMessage(secondary, maxLength),
+  ];
+}
+
+function splitMonthlyRankingRewardBlocks(blocks, maxLength = 2000) {
+  const [firstDifficultySection, ...remainingDifficultySections] = blocks.difficultySections;
+  const chunks = [
+    ...splitMonthlyRankingRewardCombinedGroup(blocks.intro, firstDifficultySection, maxLength),
+  ];
+
+  for (const difficultySection of remainingDifficultySections) {
+    chunks.push(...splitDiscordMessage(String(difficultySection || '').trim(), maxLength));
+  }
+
+  chunks.push(...splitMonthlyRankingRewardCombinedGroup(blocks.rewards, blocks.note, maxLength));
+
+  return chunks.filter((chunk) => String(chunk || '').trim());
+}
+
+async function splitMonthlyRankingRewardsMessage(payload) {
+  const blocks = await buildMonthlyRankingRewardBlocks(payload);
+  const monthlyChunkMaxLength = DISCORD_MESSAGE_MAX_LENGTH
+    - MONTHLY_RANKING_REWARD_CHUNK_PREFIX.length;
+
+  return splitMonthlyRankingRewardBlocks(blocks, monthlyChunkMaxLength)
+    .map((chunk, index) => (index === 0 ? chunk : `${MONTHLY_RANKING_REWARD_CHUNK_PREFIX}${chunk}`));
+}
+
+async function postMonthlyRankingRewards(config, payload) {
+  if (KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS.length === 0) {
+    logWarn(`Cannot post monthly ranking rewards for "${config.name}"; set KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS.`);
+    return;
+  }
+
+  const chunks = await splitMonthlyRankingRewardsMessage(payload);
+
+  for (const channelId of KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS) {
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || typeof channel.send !== 'function') {
+        logWarn(`Cannot find Discord channel ${channelId} for ${config.name}.`);
+        continue;
+      }
+
+      for (const chunk of chunks) {
+        await sendDiscordMessage(channel, {
+          content: chunk,
+        });
+      }
+    } catch (error) {
+      logWarn(`Failed to post monthly ranking rewards from ${config.name} to Discord channel ${channelId}: ${error.message || error}`);
+    }
+  }
+}
+
 class Kf2Connection {
   constructor(config) {
     this.config = config;
@@ -1627,6 +1984,12 @@ class Kf2Connection {
         return;
       }
 
+      const monthRankingRewardsPayload = parseMonthRankingRewardsPayload(rawLine);
+      if (monthRankingRewardsPayload) {
+        void postMonthlyRankingRewards(this.config, monthRankingRewardsPayload);
+        return;
+      }
+
       logWarn(`Failed to decode KF2 message from "${this.config.name}": ${error.message || error}`);
       return;
     }
@@ -1634,6 +1997,12 @@ class Kf2Connection {
     const votePayload = parseVotePayload(message);
     if (votePayload) {
       void handleKf2VotePayload(this.config, votePayload);
+      return;
+    }
+
+    const monthRankingRewardsPayload = parseMonthRankingRewardsPayload(message);
+    if (monthRankingRewardsPayload) {
+      void postMonthlyRankingRewards(this.config, monthRankingRewardsPayload);
       return;
     }
 
@@ -2289,6 +2658,11 @@ function parseInfoResponse(responsePayload) {
 }
 
 function getDifficultyLabel(difficultyKey) {
+  const relay = getRelayByDifficulty(difficultyKey);
+  if (relay?.name) {
+    return relay.name;
+  }
+
   return RANK_DISPLAY_ORDER.find((difficulty) => difficulty.key === difficultyKey)?.label || difficultyKey;
 }
 
@@ -2883,6 +3257,21 @@ async function buildExampleRequest(interaction) {
     };
   }
 
+  if (commandName === 'month-ranking-rewards') {
+    const monthRankingRewardsPayload = parseMonthRankingRewardsPayload(responsePayload);
+    if (!monthRankingRewardsPayload) {
+      throw new Error('Provide a valid month-ranking-rewards JSON payload for /example.');
+    }
+
+    return {
+      commandName,
+      responsePayload,
+      hidden,
+      raw,
+      monthRankingRewardsPayload,
+    };
+  }
+
   const resolvedTarget = targetInput
     ? await resolvePlayerTarget(targetInput)
     : null;
@@ -2898,6 +3287,35 @@ async function buildExampleRequest(interaction) {
 }
 
 async function handleExampleCommand(interaction, request) {
+  if (request.commandName === 'month-ranking-rewards') {
+    const chunks = await splitMonthlyRankingRewardsMessage(request.monthRankingRewardsPayload);
+
+    if (request.hidden) {
+      await editDiscordReply(interaction, {
+        content: chunks.shift() || 'No monthly reward summary was generated.',
+      });
+
+      for (const chunk of chunks) {
+        await followUpDiscordInteraction(interaction, {
+          content: chunk,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      return;
+    }
+
+    for (const chunk of chunks) {
+      await sendDiscordMessage(interaction.channel, {
+        content: chunk,
+      });
+    }
+
+    await editDiscordReply(interaction, {
+      content: 'Posted example response for "/month-ranking-rewards".',
+    });
+    return;
+  }
+
   if (request.commandName === 'target') {
     try {
       const target = await resolvePlayerTarget(request.targetInput);
