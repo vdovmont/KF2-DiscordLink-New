@@ -120,7 +120,7 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 
-const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'rankings', 'example'];
+const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'rankings', 'example', 'help'];
 const FORMAT_RESPONSE_ERROR_MESSAGE = 'Oh-oh: something went wrong with response from KF2 server. Please use "raw" option for detailed response.';
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DISCORD_MESSAGE_MAX_LENGTH = 2000;
@@ -963,6 +963,25 @@ function consumeCommandToken(interaction, requestedHidden) {
   return resolveCommandTokenResult(interaction, requestedHidden, true);
 }
 
+function buildHelpMessage() {
+  return [
+    '**Commands**',
+    '`/info` - Show current status of a selected KF2 server (current map, xp, players etc).',
+    '`/perk` - Show perk levels for a target player.',
+    '`/vipinfo` - Show VIP status for a target player.',
+    '`/overdrives` - Show overdrives information for a target player.',
+    '`/rank` - Show rank information for a target player (rank for each server difficulty).',
+    '`/rankings` - Show server rankings for a selected difficulty (first 10 players).',
+    '`/example` - Preview formatted output from a response payload without using a KF2 server. Not available for public use (devs only).',
+    '',
+    '**Shared Options**',
+    '`target` - Nickname, SteamID64, or Steam profile link. Used by `/perk`, `/vipinfo`, `/overdrives`, and `/rank`.',
+    '`difficulty` - Shows currently online KF2 servers. Used by `/info` and `/rankings`.',
+    '`hidden` - If true, only you will see the response. By default is false. Available for every command.',
+    '`raw` - Post the raw KF2 response without formatting. Not available for public use (devs only).',
+  ].join('\n');
+}
+
 function resolveRawOption(interaction) {
   const rawRequested = interaction.options.getBoolean('raw') || false;
   if (!rawRequested) {
@@ -1062,6 +1081,9 @@ const commandDefinitions = [
           .setRequired(false),
       ),
   )),
+  addHiddenOption(new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('Show descriptions of bot commands and their options')),
 ];
 
 function getMemberNickname(interaction) {
@@ -3837,6 +3859,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   try {
+    if (interaction.commandName === 'help') {
+      const requestedHidden = interaction.options.getBoolean('hidden') || false;
+      const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
+      if (!availabilityResult.allowed) {
+        await replyDiscordInteraction(interaction, {
+          content: availabilityResult.message,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const tokenResult = consumeCommandToken(interaction, requestedHidden);
+      if (!tokenResult.allowed) {
+        await replyDiscordInteraction(interaction, {
+          content: tokenResult.message,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      await replyDiscordInteraction(interaction, {
+        content: wrapFormattedResponse(interaction, {}, buildHelpMessage()),
+        flags: tokenResult.hidden ? MessageFlags.Ephemeral : undefined,
+      });
+      return;
+    }
+
     await deferDiscordReply(interaction, {
       flags: MessageFlags.Ephemeral,
     });
