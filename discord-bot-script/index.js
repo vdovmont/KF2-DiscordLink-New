@@ -1646,6 +1646,19 @@ function normalizeSteamIdText(value) {
   return String(value || '').trim();
 }
 
+async function resolveResponseTargetDisplay(target, cache = new Map()) {
+  const normalizedTarget = String(target || '').trim();
+  if (!normalizedTarget) {
+    return '';
+  }
+
+  if (isValidSteamId64(normalizedTarget)) {
+    return resolveSteamIdDisplayName(normalizedTarget, cache);
+  }
+
+  return normalizedTarget;
+}
+
 async function resolveSteamIdDisplayName(steamId, cache) {
   const normalizedSteamId = normalizeSteamIdText(steamId);
   if (!normalizedSteamId) {
@@ -2345,6 +2358,32 @@ function formatTargetResolutionExample(input, target) {
   ].join('\n');
 }
 
+async function formatResponseTargetResolutionExample(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload || !Object.prototype.hasOwnProperty.call(parsedPayload, 'target')) {
+    throw new Error('Provide response JSON with a target field.');
+  }
+
+  const responseTarget = String(parsedPayload.target || '').trim();
+  if (!responseTarget) {
+    return [
+      `Response: ${suppressDiscordLinkEmbeds(responsePayload)}`,
+      'Response target is empty.',
+      'Result: previous request target would be used.',
+    ].join('\n');
+  }
+
+  const display = await resolveResponseTargetDisplay(responseTarget);
+  const detectedAs = isValidSteamId64(responseTarget) ? 'steamid' : 'nickname';
+
+  return [
+    `Response: ${suppressDiscordLinkEmbeds(responsePayload)}`,
+    `Response target: ${responseTarget}`,
+    `Detected as: ${detectedAs}`,
+    `Display in formatted responses: ${display}`,
+  ].join('\n');
+}
+
 async function buildTargetRelayRequest(interaction, commandName, hidden, raw) {
   const relay = getDefaultRelay();
 
@@ -2723,7 +2762,7 @@ function formatVipInfoResponse(request, responsePayload) {
     return responsePayload;
   }
 
-  const target = request.requestedTarget || 'User';
+  const target = formatResponseTargetDisplay(request.requestedTarget || 'User');
   const vipInfo = parseVipInfo(responsePayload);
   if (!vipInfo) {
     return null;
@@ -3043,50 +3082,61 @@ function formatRankResponse(request, responsePayload) {
   return lines.join('\n');
 }
 
+function formatResponseTargetDisplay(target) {
+  return `"${String(target || '').trim()}"`;
+}
+
 function prependRequestedTargetHeader(request, responseText) {
   if (!request.requestedTarget) {
     return responseText;
   }
 
-  return `Information for ${request.requestedTarget}:\n${responseText}`;
+  return `Information for ${formatResponseTargetDisplay(request.requestedTarget)}:\n${responseText}`;
 }
 
-function formatResponse(interaction, request, responsePayload) {
-  if (request.raw) {
-    return prependRequestedTargetHeader(request, responsePayload);
-  }
-
+async function formatResponse(interaction, request, responsePayload) {
   let formattedResponse = responsePayload;
   const parsedPayload = parseRelayJsonPayload(responsePayload);
+  const responseTarget = parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target')
+    ? await resolveResponseTargetDisplay(parsedPayload.target)
+    : '';
+  const effectiveRequest = responseTarget
+    ? { ...request, requestedTarget: responseTarget }
+    : request;
+
+  if (request.raw) {
+    return prependRequestedTargetHeader(effectiveRequest, responsePayload);
+  }
+
   if (!parsedPayload) {
-    return prependRequestedTargetHeader(request, FORMAT_RESPONSE_ERROR_MESSAGE);
+    return prependRequestedTargetHeader(effectiveRequest, FORMAT_RESPONSE_ERROR_MESSAGE);
   }
 
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
-    if (request.commandName === 'vipinfo') {
-      const target = request.requestedTarget || 'User';
-      return prependRequestedTargetHeader(request, `${target}: ${parsedPayload.error.trim()}`);
+    if (effectiveRequest.commandName === 'vipinfo') {
+      const target = formatResponseTargetDisplay(effectiveRequest.requestedTarget || 'User');
+      return prependRequestedTargetHeader(effectiveRequest, `${target}: ${parsedPayload.error.trim()}`);
     }
-    return prependRequestedTargetHeader(request, parsedPayload.error.trim());
+    return prependRequestedTargetHeader(effectiveRequest, parsedPayload.error.trim());
   }
 
-  if (request.commandName === 'perk') {
-    formattedResponse = formatPerkResponse(interaction, request, responsePayload);
-  } else if (request.commandName === 'info') {
-    formattedResponse = formatInfoResponse(interaction, request, responsePayload);
-  } else if (request.commandName === 'vipinfo') {
-    formattedResponse = formatVipInfoResponse(request, responsePayload);
-  } else if (request.commandName === 'overdrives') {
-    formattedResponse = formatOverdrivesResponse(request, responsePayload);
-  } else if (request.commandName === 'rank' || request.commandName === 'rankings') {
-    formattedResponse = formatRankResponse(request, responsePayload);
+  if (effectiveRequest.commandName === 'perk') {
+    formattedResponse = formatPerkResponse(interaction, effectiveRequest, responsePayload);
+  } else if (effectiveRequest.commandName === 'info') {
+    formattedResponse = formatInfoResponse(interaction, effectiveRequest, responsePayload);
+  } else if (effectiveRequest.commandName === 'vipinfo') {
+    formattedResponse = formatVipInfoResponse(effectiveRequest, responsePayload);
+  } else if (effectiveRequest.commandName === 'overdrives') {
+    formattedResponse = formatOverdrivesResponse(effectiveRequest, responsePayload);
+  } else if (effectiveRequest.commandName === 'rank' || effectiveRequest.commandName === 'rankings') {
+    formattedResponse = formatRankResponse(effectiveRequest, responsePayload);
   }
 
   if (!formattedResponse) {
-    return prependRequestedTargetHeader(request, FORMAT_RESPONSE_ERROR_MESSAGE);
+    return prependRequestedTargetHeader(effectiveRequest, FORMAT_RESPONSE_ERROR_MESSAGE);
   }
 
-  return prependRequestedTargetHeader(request, formattedResponse);
+  return prependRequestedTargetHeader(effectiveRequest, formattedResponse);
 }
 
 function getInteractionUserMention(interaction) {
@@ -3102,7 +3152,7 @@ async function postResponse(interaction, request, responsePayload, successMessag
   const formattedResponse = wrapFormattedResponse(
     interaction,
     request,
-    formatResponse(interaction, request, responsePayload),
+    await formatResponse(interaction, request, responsePayload),
   );
 
   if (request.hidden) {
@@ -3317,6 +3367,24 @@ async function handleExampleCommand(interaction, request) {
   }
 
   if (request.commandName === 'target') {
+    const parsedResponsePayload = parseRelayJsonPayload(request.responsePayload);
+    if (parsedResponsePayload && Object.prototype.hasOwnProperty.call(parsedResponsePayload, 'target')) {
+      try {
+        await editDiscordReply(interaction, {
+          content: await formatResponseTargetResolutionExample(request.responsePayload),
+        });
+      } catch (error) {
+        await editDiscordReply(interaction, {
+          content: [
+            `Response: ${suppressDiscordLinkEmbeds(request.responsePayload)}`,
+            'Response target resolution failed.',
+            `Reason: ${error.message || error}`,
+          ].join('\n'),
+        });
+      }
+      return;
+    }
+
     try {
       const target = await resolvePlayerTarget(request.targetInput);
       await editDiscordReply(interaction, {
