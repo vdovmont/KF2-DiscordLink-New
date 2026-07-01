@@ -39,6 +39,7 @@ let KF2_PAUSE_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseVotePassPercent;
 let KF2_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2SkipVotePassPercent;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
+let DISCORD_WEBHOOK_RETRY_INTERVAL_MS = initialRuntimeConfig.discordWebhookRetryIntervalMs;
 let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
 let COMMAND_PUBLIC_TOKEN_LIMIT = initialRuntimeConfig.commandPublicTokenLimit;
 let COMMAND_PRIVATE_TOKEN_LIMIT = initialRuntimeConfig.commandPrivateTokenLimit;
@@ -111,6 +112,10 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   process.exit(1);
 }
 
+process.on('unhandledRejection', (reason) => {
+  logError(`Unhandled promise rejection: ${reason?.stack || reason?.message || reason}`);
+});
+
 const {
   Client,
   Events,
@@ -124,6 +129,7 @@ const {
 const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'rankings', 'example', 'help'];
 const FORMAT_RESPONSE_ERROR_MESSAGE = 'Oh-oh: something went wrong with response from KF2 server. Please use "raw" option for detailed response.';
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
+const MILLISECONDS_PER_SECOND = 1000;
 const DISCORD_MESSAGE_MAX_LENGTH = 2000;
 const DISCORD_ZERO_WIDTH_SPACE = '\u200B';
 const MONTHLY_RANKING_REWARD_CHUNK_PREFIX = `${DISCORD_ZERO_WIDTH_SPACE}\n`;
@@ -279,6 +285,10 @@ let activeDifficulties = [];
 const relayQueues = new Map();
 const processingDifficulties = new Set();
 const webhookSendQueues = new Map();
+let webhookRetryQueue = [];
+let webhookRetryTimer = null;
+let webhookRetryProcessing = false;
+const webhookRetryLoggedErrorKeys = new Set();
 const kf2Connections = [];
 const activeVotes = new Map();
 let envReloadTimer = null;
@@ -315,7 +325,7 @@ function parsePercent(value, defaultValue) {
 }
 
 function secondsToMilliseconds(seconds) {
-  return seconds * 1000;
+  return seconds * MILLISECONDS_PER_SECOND;
 }
 
 function parseSecondsToMilliseconds(value, defaultSeconds) {
@@ -356,6 +366,7 @@ function loadRuntimeConfig(env = process.env) {
     kf2SkipVotePassPercent: parsePercent(env.KF2_SKIP_VOTE_PASS_PERCENT, 100),
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
+    discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
     commandPublicTokenLimit: parsePositiveInteger(env.COMMAND_PUBLIC_TOKEN_LIMIT, 5),
     commandPrivateTokenLimit: parsePositiveInteger(env.COMMAND_PRIVATE_TOKEN_LIMIT, 10),
@@ -380,6 +391,7 @@ function applyRuntimeConfig(config) {
   KF2_SKIP_VOTE_PASS_PERCENT = config.kf2SkipVotePassPercent;
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
+  DISCORD_WEBHOOK_RETRY_INTERVAL_MS = config.discordWebhookRetryIntervalMs;
   SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
   COMMAND_PUBLIC_TOKEN_LIMIT = config.commandPublicTokenLimit;
   COMMAND_PRIVATE_TOKEN_LIMIT = config.commandPrivateTokenLimit;
@@ -390,6 +402,7 @@ function applyRuntimeConfig(config) {
   pruneCommandTokenState();
   saveCommandTokenState();
   scheduleCommandTokenReset();
+  scheduleWebhookRetryQueue();
 }
 
 function isReloadableEnvKey(key) {
@@ -750,7 +763,7 @@ function getNextCommandTokenResetMs(nowMs = Date.now()) {
 }
 
 function formatDurationUntilReset(durationMs) {
-  let remainingSeconds = Math.max(1, Math.ceil(durationMs / 1000));
+  let remainingSeconds = Math.max(1, Math.ceil(durationMs / MILLISECONDS_PER_SECOND));
   const days = Math.floor(remainingSeconds / 86400);
   remainingSeconds %= 86400;
   const hours = Math.floor(remainingSeconds / 3600);
@@ -870,7 +883,7 @@ function scheduleCommandTokenReset() {
     clearTimeout(commandTokenResetTimer);
   }
 
-  const delayMs = Math.max(1000, getNextCommandTokenResetMs() - Date.now());
+  const delayMs = Math.max(MILLISECONDS_PER_SECOND, getNextCommandTokenResetMs() - Date.now());
   commandTokenResetTimer = setTimeout(() => {
     resetCommandTokenState();
     scheduleCommandTokenReset();
@@ -1284,13 +1297,145 @@ function wait(milliseconds) {
   });
 }
 
+function getWebhookErrorStatus(error) {
+  const status = Number.parseInt(error?.status, 10);
+  return Number.isInteger(status) ? status : null;
+}
+
+function isRetriableWebhookError(error) {
+  const status = getWebhookErrorStatus(error);
+
+  if (status === null) {
+    return true;
+  }
+
+  return status === 429 || status >= 500;
+}
+
+function getWebhookErrorLogKey(error) {
+  const status = getWebhookErrorStatus(error);
+  if (status !== null) {
+    return `${status}:${error?.statusText || ''}`;
+  }
+
+  return `network:${error?.message || String(error || '')}`;
+}
+
+function logWebhookQueueErrorOnce(error, buildMessage) {
+  const errorKey = getWebhookErrorLogKey(error);
+
+  if (webhookRetryLoggedErrorKeys.has(errorKey)) {
+    return;
+  }
+
+  webhookRetryLoggedErrorKeys.add(errorKey);
+  logWarn(buildMessage(error));
+}
+
+function createWebhookSendError(response, responseBody) {
+  const error = new Error(`${response.status} ${response.statusText}${responseBody ? `: ${responseBody}` : ''}`);
+  error.status = response.status;
+  error.statusText = response.statusText;
+  error.responseBody = responseBody;
+  return error;
+}
+
+function enqueueWebhookRetry(webhookUrl, payloads, options = {}) {
+  const nowMs = Date.now();
+  const payloadList = Array.isArray(payloads) ? payloads : [payloads];
+  const retryAfterMs = Math.max(0, Number.parseInt(options.retryAfterMs, 10) || 0);
+
+  for (const payload of payloadList) {
+    webhookRetryQueue.push({
+      webhookUrl,
+      payload,
+      attempts: 0,
+      nextAttemptMs: nowMs + retryAfterMs,
+    });
+  }
+
+  scheduleWebhookRetryQueue();
+}
+
+function scheduleWebhookRetryQueue() {
+  if (webhookRetryTimer) {
+    clearTimeout(webhookRetryTimer);
+    webhookRetryTimer = null;
+  }
+
+  if (webhookRetryQueue.length === 0) {
+    webhookRetryLoggedErrorKeys.clear();
+    return;
+  }
+
+  const nextAttemptMs = webhookRetryQueue[0].nextAttemptMs;
+  const delayMs = Math.max(MILLISECONDS_PER_SECOND, nextAttemptMs - Date.now());
+
+  webhookRetryTimer = setTimeout(() => {
+    webhookRetryTimer = null;
+    processWebhookRetryQueue().catch((error) => {
+      logError(`Webhook retry queue worker failed: ${error.message || error}`);
+      scheduleWebhookRetryQueue();
+    });
+  }, delayMs);
+}
+
+async function processWebhookRetryQueue() {
+  if (webhookRetryProcessing) {
+    return;
+  }
+
+  webhookRetryProcessing = true;
+
+  try {
+    let deliveredCount = 0;
+    let deliveryAttemptCount = 0;
+
+    while (webhookRetryQueue.length > 0 && webhookRetryQueue[0].nextAttemptMs <= Date.now()) {
+      const entry = webhookRetryQueue[0];
+
+      try {
+        await sendWebhookMessage(entry.webhookUrl, entry.payload, { queueOnFailure: false });
+        webhookRetryQueue.shift();
+        deliveredCount += 1;
+        deliveryAttemptCount += entry.attempts + 1;
+      } catch (error) {
+        if (!isRetriableWebhookError(error)) {
+          webhookRetryQueue.shift();
+          logError(`Dropping queued Discord webhook message after permanent error: ${error.message || error}`);
+          continue;
+        }
+
+        entry.attempts += 1;
+        entry.nextAttemptMs = Date.now() + DISCORD_WEBHOOK_RETRY_INTERVAL_MS;
+        logWebhookQueueErrorOnce(
+          error,
+          () => `Discord webhook retry queue is still blocked; will retry in `
+            + `${Math.ceil(DISCORD_WEBHOOK_RETRY_INTERVAL_MS / MILLISECONDS_PER_SECOND)}s: ${error.message || error}`,
+        );
+        break;
+      }
+    }
+
+    if (deliveredCount > 0) {
+      logInfo(
+        `Delivered ${deliveredCount} queued Discord webhook message(s) `
+        + `after ${deliveryAttemptCount} total delivery attempt(s).`,
+      );
+    }
+  } finally {
+    webhookRetryProcessing = false;
+    scheduleWebhookRetryQueue();
+  }
+}
+
 function getDiscordRateLimitRetryMs(response, responseBody) {
   try {
     const parsedBody = responseBody ? JSON.parse(responseBody) : null;
     const retryAfterSeconds = Number.parseFloat(parsedBody?.retry_after);
 
     if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
-      return Math.ceil(retryAfterSeconds * 1000) + 100;
+      return Math.ceil(retryAfterSeconds * MILLISECONDS_PER_SECOND) + 100;
     }
   } catch (error) {
     // Fall back to the response header below.
@@ -1298,10 +1443,10 @@ function getDiscordRateLimitRetryMs(response, responseBody) {
 
   const retryAfterHeader = Number.parseFloat(response.headers.get('retry-after'));
   if (Number.isFinite(retryAfterHeader) && retryAfterHeader >= 0) {
-    return Math.ceil(retryAfterHeader * 1000) + 100;
+    return Math.ceil(retryAfterHeader * MILLISECONDS_PER_SECOND) + 100;
   }
 
-  return 1000;
+  return MILLISECONDS_PER_SECOND;
 }
 
 async function sendWebhookMessageNow(webhookUrl, payload) {
@@ -1329,26 +1474,48 @@ async function sendWebhookMessageNow(webhookUrl, payload) {
       continue;
     }
 
-    throw new Error(`${response.status} ${response.statusText}${responseBody ? `: ${responseBody}` : ''}`);
+    throw createWebhookSendError(response, responseBody);
   }
 }
 
-async function sendWebhookMessage(webhookUrl, payload) {
+async function sendWebhookMessage(webhookUrl, payload, options = {}) {
   const payloadChunks = splitDiscordMessageOptions(payload);
   const previousSend = webhookSendQueues.get(webhookUrl) || Promise.resolve();
   const nextSend = previousSend
     .catch(() => {})
     .then(async () => {
-      for (const payloadChunk of payloadChunks) {
-        await sendWebhookMessageNow(webhookUrl, payloadChunk);
+      if (options.queueOnFailure && webhookRetryQueue.length > 0) {
+        enqueueWebhookRetry(
+          webhookUrl,
+          payloadChunks,
+          { retryAfterMs: 0 },
+        );
+        return { queued: true };
+      }
+
+      for (let index = 0; index < payloadChunks.length; index += 1) {
+        try {
+          await sendWebhookMessageNow(webhookUrl, payloadChunks[index]);
+        } catch (error) {
+          if (options.queueOnFailure && isRetriableWebhookError(error)) {
+            enqueueWebhookRetry(
+              webhookUrl,
+              payloadChunks.slice(index),
+              { retryAfterMs: DISCORD_WEBHOOK_RETRY_INTERVAL_MS },
+            );
+          }
+          throw error;
+        }
       }
     });
 
-  const queuedSend = nextSend.finally(() => {
-    if (webhookSendQueues.get(webhookUrl) === queuedSend) {
-      webhookSendQueues.delete(webhookUrl);
-    }
-  });
+  const queuedSend = nextSend
+    .catch(() => {})
+    .finally(() => {
+      if (webhookSendQueues.get(webhookUrl) === queuedSend) {
+        webhookSendQueues.delete(webhookUrl);
+      }
+    });
 
   webhookSendQueues.set(webhookUrl, queuedSend);
   return nextSend;
@@ -1374,11 +1541,19 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
       };
 
       try {
-        await sendWebhookMessage(config.webhookUrl, payload);
+        await sendWebhookMessage(config.webhookUrl, payload, { queueOnFailure: true });
       } catch (error) {
-        console.error('Discord webhook send failed:', error?.message || error);
-        console.error('Payload was:', JSON.stringify(payload, null, 2));
-        throw error;
+        if (isRetriableWebhookError(error)) {
+          logWebhookQueueErrorOnce(
+            error,
+            () => `Discord webhook retry queue started after failed KF2 chat from ${config.name}: ${error.message || error}`,
+          );
+          return;
+        } else {
+          logError(`Discord webhook send failed with permanent error; message was not queued: ${error.message || error}`);
+          logError(`Payload was: ${JSON.stringify(payload)}`);
+          return;
+        }
       }
       return;
     }
@@ -1398,9 +1573,8 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
         try {
           await sendDiscordMessage(channel, payload);
         } catch (error) {
-          console.error('Discord channel send failed:', error?.status, error?.rawError || error);
-          console.error('Payload was:', JSON.stringify(payload, null, 2));
-          throw error;
+          logWarn(`Failed to forward KF2 chat from ${config.name} to Discord channel ${channelId}: ${error.message || error}`);
+          logWarn(`Payload was: ${JSON.stringify(payload)}`);
         }
       } catch (error) {
         logWarn(`Failed to forward KF2 chat from ${config.name} to Discord channel ${channelId}: ${error.message || error}`);
@@ -2243,7 +2417,7 @@ class Kf2Connection {
       refreshActiveRelays();
 
       if (wasConnected) {
-        logWarn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / 1000)} seconds...`);
+        logWarn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / MILLISECONDS_PER_SECOND)} seconds...`);
       }
 
       this.scheduleReconnect();
@@ -3972,6 +4146,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 envFileSnapshot = readEnvSnapshotFromFile();
 loadCommandTokenState();
 scheduleCommandTokenReset();
+scheduleWebhookRetryQueue();
 
 (async () => {
   await registerCommands();

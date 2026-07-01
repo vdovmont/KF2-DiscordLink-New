@@ -1,7 +1,5 @@
 /.vscode/
 */node_modules/
-package-lock.json
-package.json
 .env
 *.env
 !example.env
