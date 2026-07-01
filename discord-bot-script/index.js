@@ -26,6 +26,7 @@ let activeSteamApiKey = STEAM_API_KEY;
 const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
 const MILLISECONDS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
 const initialRuntimeConfig = loadRuntimeConfig(process.env);
 let CDA_AVATAR_URL = initialRuntimeConfig.cdaAvatarUrl;
 let KF2_RECONNECT_DELAY_MS = initialRuntimeConfig.kf2ReconnectDelayMs;
@@ -41,6 +42,7 @@ let KF2_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2SkipVotePassPercent;
 let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let DISCORD_WEBHOOK_RETRY_INTERVAL_MS = initialRuntimeConfig.discordWebhookRetryIntervalMs;
+let DISCORD_RETRY_QUEUE_MAX_AGE_MS = initialRuntimeConfig.discordRetryQueueMaxAgeMs;
 let SPECIAL_ACCESS_ROLE_IDS = initialRuntimeConfig.specialAccessRoleIds;
 let COMMAND_PUBLIC_TOKEN_LIMIT = initialRuntimeConfig.commandPublicTokenLimit;
 let COMMAND_PRIVATE_TOKEN_LIMIT = initialRuntimeConfig.commandPrivateTokenLimit;
@@ -223,6 +225,21 @@ function editDiscordMessage(message, options) {
   return message.edit(withSuppressedEmbeds(options));
 }
 
+function getDiscordErrorStatus(error) {
+  const status = Number.parseInt(error?.status || error?.httpStatus, 10);
+  return Number.isInteger(status) ? status : null;
+}
+
+function isRetriableDiscordError(error) {
+  const status = getDiscordErrorStatus(error);
+
+  if (status === null) {
+    return true;
+  }
+
+  return status === 429 || status >= 500;
+}
+
 async function replyDiscordInteraction(interaction, options) {
   const [firstOptions, ...followUpOptions] = splitDiscordMessageOptions(options);
   const response = await interaction.reply(firstOptions);
@@ -289,6 +306,12 @@ let webhookRetryQueue = [];
 let webhookRetryTimer = null;
 let webhookRetryProcessing = false;
 const webhookRetryLoggedErrorKeys = new Set();
+let webhookRetryQueuePaused = false;
+let discordMessageRetryQueue = [];
+let discordMessageRetryTimer = null;
+let discordMessageRetryProcessing = false;
+let discordMessageRetryQueuePaused = false;
+const discordMessageRetryLoggedErrorKeys = new Set();
 const kf2Connections = [];
 const activeVotes = new Map();
 let envReloadTimer = null;
@@ -315,6 +338,11 @@ function parsePositiveInteger(value, defaultValue) {
   return parsedValue > 0 ? parsedValue : defaultValue;
 }
 
+function parseNonNegativeInteger(value, defaultValue) {
+  const parsedValue = parseInteger(value, defaultValue);
+  return parsedValue >= 0 ? parsedValue : defaultValue;
+}
+
 function parsePercent(value, defaultValue) {
   const parsedValue = parseInteger(value, defaultValue);
   if (!Number.isInteger(parsedValue)) {
@@ -330,6 +358,14 @@ function secondsToMilliseconds(seconds) {
 
 function parseSecondsToMilliseconds(value, defaultSeconds) {
   return secondsToMilliseconds(parsePositiveInteger(value, defaultSeconds));
+}
+
+function minutesToMilliseconds(minutes) {
+  return secondsToMilliseconds(minutes * SECONDS_PER_MINUTE);
+}
+
+function parseMinutesToMilliseconds(value, defaultMinutes) {
+  return minutesToMilliseconds(parseNonNegativeInteger(value, defaultMinutes));
 }
 
 function parseRoleIds(value) {
@@ -367,6 +403,7 @@ function loadRuntimeConfig(env = process.env) {
     kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
+    discordRetryQueueMaxAgeMs: parseMinutesToMilliseconds(env.DISCORD_RETRY_QUEUE_MAX_AGE_MINUTES, 60),
     specialAccessRoleIds: parseRoleIds(env.SPECIAL_ACCESS_ROLE_IDS),
     commandPublicTokenLimit: parsePositiveInteger(env.COMMAND_PUBLIC_TOKEN_LIMIT, 5),
     commandPrivateTokenLimit: parsePositiveInteger(env.COMMAND_PRIVATE_TOKEN_LIMIT, 10),
@@ -392,6 +429,7 @@ function applyRuntimeConfig(config) {
   KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
   DISCORD_WEBHOOK_RETRY_INTERVAL_MS = config.discordWebhookRetryIntervalMs;
+  DISCORD_RETRY_QUEUE_MAX_AGE_MS = config.discordRetryQueueMaxAgeMs;
   SPECIAL_ACCESS_ROLE_IDS = config.specialAccessRoleIds;
   COMMAND_PUBLIC_TOKEN_LIMIT = config.commandPublicTokenLimit;
   COMMAND_PRIVATE_TOKEN_LIMIT = config.commandPrivateTokenLimit;
@@ -403,6 +441,7 @@ function applyRuntimeConfig(config) {
   saveCommandTokenState();
   scheduleCommandTokenReset();
   scheduleWebhookRetryQueue();
+  scheduleDiscordMessageRetryQueue();
 }
 
 function isReloadableEnvKey(key) {
@@ -1340,7 +1379,20 @@ function createWebhookSendError(response, responseBody) {
   return error;
 }
 
+function isRetryEntryExpired(entry) {
+  return DISCORD_RETRY_QUEUE_MAX_AGE_MS > 0
+    && Date.now() - (entry.createdAtMs || Date.now()) >= DISCORD_RETRY_QUEUE_MAX_AGE_MS;
+}
+
+function formatRetryQueueMaxAgeMinutes() {
+  return Math.ceil(DISCORD_RETRY_QUEUE_MAX_AGE_MS / minutesToMilliseconds(1));
+}
+
 function enqueueWebhookRetry(webhookUrl, payloads, options = {}) {
+  if (webhookRetryQueuePaused) {
+    return;
+  }
+
   const nowMs = Date.now();
   const payloadList = Array.isArray(payloads) ? payloads : [payloads];
   const retryAfterMs = Math.max(0, Number.parseInt(options.retryAfterMs, 10) || 0);
@@ -1350,11 +1402,29 @@ function enqueueWebhookRetry(webhookUrl, payloads, options = {}) {
       webhookUrl,
       payload,
       attempts: 0,
+      createdAtMs: nowMs,
       nextAttemptMs: nowMs + retryAfterMs,
     });
   }
 
   scheduleWebhookRetryQueue();
+}
+
+function clearWebhookRetryQueueForMaxAge() {
+  if (webhookRetryQueue.length === 0) {
+    return false;
+  }
+
+  const droppedCount = webhookRetryQueue.length;
+  webhookRetryQueue = [];
+  webhookRetryQueuePaused = true;
+  webhookRetryLoggedErrorKeys.clear();
+  logWarn(
+    `Dropped ${droppedCount} queued Discord webhook message(s) after `
+    + `${formatRetryQueueMaxAgeMinutes()}m without successful webhook delivery. `
+    + 'Webhook queueing will resume after webhook delivery succeeds again.',
+  );
+  return true;
 }
 
 function scheduleWebhookRetryQueue() {
@@ -1393,6 +1463,9 @@ async function processWebhookRetryQueue() {
 
     while (webhookRetryQueue.length > 0 && webhookRetryQueue[0].nextAttemptMs <= Date.now()) {
       const entry = webhookRetryQueue[0];
+      if (isRetryEntryExpired(entry) && clearWebhookRetryQueueForMaxAge()) {
+        break;
+      }
 
       try {
         await sendWebhookMessage(entry.webhookUrl, entry.payload, { queueOnFailure: false });
@@ -1426,6 +1499,259 @@ async function processWebhookRetryQueue() {
   } finally {
     webhookRetryProcessing = false;
     scheduleWebhookRetryQueue();
+  }
+}
+
+function getDiscordMessageRetryErrorLogKey(error) {
+  const status = getDiscordErrorStatus(error);
+  if (status !== null) {
+    return `${status}:${error?.message || ''}`;
+  }
+
+  return `network:${error?.message || String(error || '')}`;
+}
+
+function logDiscordMessageQueueErrorOnce(error, buildMessage) {
+  const errorKey = getDiscordMessageRetryErrorLogKey(error);
+
+  if (discordMessageRetryLoggedErrorKeys.has(errorKey)) {
+    return;
+  }
+
+  discordMessageRetryLoggedErrorKeys.add(errorKey);
+  logWarn(buildMessage(error));
+}
+
+function createQueuedDiscordMessage(entry) {
+  return {
+    queued: true,
+    edit(nextOptions) {
+      entry.optionsProvider = () => withSuppressedEmbeds(nextOptions);
+      if (entry.message && typeof entry.message.edit === 'function') {
+        return editDiscordMessage(entry.message, nextOptions);
+      }
+
+      return Promise.resolve(this);
+    },
+  };
+}
+
+function enqueueDiscordMessageRetry(entry) {
+  if (discordMessageRetryQueuePaused) {
+    return null;
+  }
+
+  const nowMs = Date.now();
+  const queuedEntry = {
+    ...entry,
+    attempts: 0,
+    createdAtMs: nowMs,
+    nextAttemptMs: nowMs + Math.max(0, Number.parseInt(entry.retryAfterMs, 10) || 0),
+  };
+
+  if (queuedEntry.operation === 'send' && !queuedEntry.queuedMessage) {
+    queuedEntry.queuedMessage = createQueuedDiscordMessage(queuedEntry);
+  }
+
+  discordMessageRetryQueue.push(queuedEntry);
+  scheduleDiscordMessageRetryQueue();
+  return queuedEntry;
+}
+
+function clearDiscordMessageRetryQueueForMaxAge() {
+  if (discordMessageRetryQueue.length === 0) {
+    return false;
+  }
+
+  const droppedCount = discordMessageRetryQueue.length;
+  discordMessageRetryQueue = [];
+  discordMessageRetryQueuePaused = true;
+  discordMessageRetryLoggedErrorKeys.clear();
+  logWarn(
+    `Dropped ${droppedCount} queued Discord bot message operation(s) after `
+    + `${formatRetryQueueMaxAgeMinutes()}m without successful Discord message delivery. `
+    + 'Bot message queueing will resume after Discord message delivery succeeds again.',
+  );
+  return true;
+}
+
+function scheduleDiscordMessageRetryQueue() {
+  if (discordMessageRetryTimer) {
+    clearTimeout(discordMessageRetryTimer);
+    discordMessageRetryTimer = null;
+  }
+
+  if (discordMessageRetryQueue.length === 0) {
+    discordMessageRetryLoggedErrorKeys.clear();
+    return;
+  }
+
+  const nextAttemptMs = discordMessageRetryQueue[0].nextAttemptMs;
+  const delayMs = Math.max(MILLISECONDS_PER_SECOND, nextAttemptMs - Date.now());
+
+  discordMessageRetryTimer = setTimeout(() => {
+    discordMessageRetryTimer = null;
+    processDiscordMessageRetryQueue().catch((error) => {
+      logError(`Discord bot message retry queue worker failed: ${error.message || error}`);
+      scheduleDiscordMessageRetryQueue();
+    });
+  }, delayMs);
+}
+
+async function runDiscordMessageRetryEntry(entry) {
+  const options = entry.optionsProvider();
+
+  if (entry.operation === 'send') {
+    const channel = await client.channels.fetch(entry.channelId);
+    if (!channel || typeof channel.send !== 'function') {
+      const error = new Error(`Cannot find Discord channel ${entry.channelId}.`);
+      error.status = 404;
+      throw error;
+    }
+
+    entry.message = await sendDiscordMessage(channel, options);
+    if (entry.queuedMessage) {
+      entry.queuedMessage.message = entry.message;
+    }
+    discordMessageRetryQueuePaused = false;
+    return;
+  }
+
+  if (entry.operation === 'edit') {
+    await editDiscordMessage(entry.message, options);
+    discordMessageRetryQueuePaused = false;
+    return;
+  }
+
+  throw new Error(`Unknown Discord message retry operation "${entry.operation}".`);
+}
+
+async function processDiscordMessageRetryQueue() {
+  if (discordMessageRetryProcessing) {
+    return;
+  }
+
+  discordMessageRetryProcessing = true;
+
+  try {
+    let deliveredCount = 0;
+    let deliveryAttemptCount = 0;
+
+    while (discordMessageRetryQueue.length > 0 && discordMessageRetryQueue[0].nextAttemptMs <= Date.now()) {
+      const entry = discordMessageRetryQueue[0];
+      if (isRetryEntryExpired(entry) && clearDiscordMessageRetryQueueForMaxAge()) {
+        break;
+      }
+
+      try {
+        await runDiscordMessageRetryEntry(entry);
+        discordMessageRetryQueue.shift();
+        deliveredCount += 1;
+        deliveryAttemptCount += entry.attempts + 1;
+      } catch (error) {
+        if (!isRetriableDiscordError(error)) {
+          discordMessageRetryQueue.shift();
+          logError(`Dropping queued Discord bot message operation after permanent error: ${error.message || error}`);
+          continue;
+        }
+
+        entry.attempts += 1;
+        entry.nextAttemptMs = Date.now() + DISCORD_WEBHOOK_RETRY_INTERVAL_MS;
+        logDiscordMessageQueueErrorOnce(
+          error,
+          () => `Discord bot message retry queue is still blocked; will retry in `
+            + `${Math.ceil(DISCORD_WEBHOOK_RETRY_INTERVAL_MS / MILLISECONDS_PER_SECOND)}s: ${error.message || error}`,
+        );
+        break;
+      }
+    }
+
+    if (deliveredCount > 0) {
+      logInfo(
+        `Delivered ${deliveredCount} queued Discord bot message operation(s) `
+        + `after ${deliveryAttemptCount} total delivery attempt(s).`,
+      );
+    }
+  } finally {
+    discordMessageRetryProcessing = false;
+    scheduleDiscordMessageRetryQueue();
+  }
+}
+
+async function sendDiscordMessageWithRetry(channelId, options, label) {
+  if (!discordMessageRetryQueuePaused && discordMessageRetryQueue.length > 0) {
+    const entry = enqueueDiscordMessageRetry({
+      operation: 'send',
+      channelId,
+      optionsProvider: () => withSuppressedEmbeds(options),
+      retryAfterMs: 0,
+    });
+    return entry?.queuedMessage || null;
+  }
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || typeof channel.send !== 'function') {
+      logWarn(`Cannot find Discord channel ${channelId}${label ? ` for ${label}` : ''}.`);
+      return null;
+    }
+
+    const message = await sendDiscordMessage(channel, options);
+    discordMessageRetryQueuePaused = false;
+    return message;
+  } catch (error) {
+    if (isRetriableDiscordError(error) && !discordMessageRetryQueuePaused) {
+      const entry = enqueueDiscordMessageRetry({
+        operation: 'send',
+        channelId,
+        optionsProvider: () => withSuppressedEmbeds(options),
+        retryAfterMs: DISCORD_WEBHOOK_RETRY_INTERVAL_MS,
+      });
+      logDiscordMessageQueueErrorOnce(
+        error,
+        () => `Discord bot message retry queue started${label ? ` for ${label}` : ''}: ${error.message || error}`,
+      );
+      return entry?.queuedMessage || null;
+    }
+
+    throw error;
+  }
+}
+
+async function editDiscordMessageWithRetry(message, optionsProvider, label) {
+  if (message?.queued && typeof message.edit === 'function') {
+    return message.edit(optionsProvider());
+  }
+
+  if (!discordMessageRetryQueuePaused && discordMessageRetryQueue.length > 0) {
+    enqueueDiscordMessageRetry({
+      operation: 'edit',
+      message,
+      optionsProvider: () => withSuppressedEmbeds(optionsProvider()),
+      retryAfterMs: 0,
+    });
+    return;
+  }
+
+  try {
+    await editDiscordMessage(message, optionsProvider());
+    discordMessageRetryQueuePaused = false;
+  } catch (error) {
+    if (isRetriableDiscordError(error) && !discordMessageRetryQueuePaused) {
+      enqueueDiscordMessageRetry({
+        operation: 'edit',
+        message,
+        optionsProvider: () => withSuppressedEmbeds(optionsProvider()),
+        retryAfterMs: DISCORD_WEBHOOK_RETRY_INTERVAL_MS,
+      });
+      logDiscordMessageQueueErrorOnce(
+        error,
+        () => `Discord bot message edit retry queue started${label ? ` for ${label}` : ''}: ${error.message || error}`,
+      );
+      return;
+    }
+
+    throw error;
   }
 }
 
@@ -1463,6 +1789,7 @@ async function sendWebhookMessageNow(webhookUrl, payload) {
     });
 
     if (response.ok) {
+      webhookRetryQueuePaused = false;
       return;
     }
 
@@ -1544,10 +1871,17 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
         await sendWebhookMessage(config.webhookUrl, payload, { queueOnFailure: true });
       } catch (error) {
         if (isRetriableWebhookError(error)) {
-          logWebhookQueueErrorOnce(
-            error,
-            () => `Discord webhook retry queue started after failed KF2 chat from ${config.name}: ${error.message || error}`,
-          );
+          if (webhookRetryQueuePaused) {
+            logWebhookQueueErrorOnce(
+              error,
+              () => `Discord webhook delivery is still unavailable after queue expiry; KF2 chat from ${config.name} was not queued: ${error.message || error}`,
+            );
+          } else {
+            logWebhookQueueErrorOnce(
+              error,
+              () => `Discord webhook retry queue started after failed KF2 chat from ${config.name}: ${error.message || error}`,
+            );
+          }
           return;
         } else {
           logError(`Discord webhook send failed with permanent error; message was not queued: ${error.message || error}`);
@@ -1812,9 +2146,11 @@ function queueVoteMessageEdit(state) {
   state.editPromise = (state.editPromise || Promise.resolve())
     .then(() => Promise.all(state.messages
       .filter((message) => message && typeof message.edit === 'function')
-      .map((message) => editDiscordMessage(message, {
-        content: formatVoteMessage(state),
-      }))))
+      .map((message) => editDiscordMessageWithRetry(
+        message,
+        () => ({ content: formatVoteMessage(state) }),
+        `vote "${state.difficulty}"`,
+      ))))
     .catch((error) => {
       logWarnConfig(`Failed to edit vote message for "${state.difficulty}": ${error.message || error}`);
     });
@@ -2008,15 +2344,12 @@ async function startVoteState(config, payload) {
   try {
     for (const channelId of channelIds) {
       try {
-        const channel = await client.channels.fetch(channelId);
-        if (!channel || typeof channel.send !== 'function') {
-          logWarnConfig(`Cannot find vote Discord channel ${channelId} for ${config.name}.`);
-          continue;
-        }
-
-        state.messages.push(await sendDiscordMessage(channel, {
+        const message = await sendDiscordMessageWithRetry(channelId, {
           content: formatVoteMessage(state),
-        }));
+        }, `vote from ${config.name}`);
+        if (message) {
+          state.messages.push(message);
+        }
       } catch (error) {
         logWarnConfig(`Failed to post vote message for ${config.name} to channel ${channelId}: ${error.message || error}`);
       }
@@ -2339,16 +2672,10 @@ async function postMonthlyRankingRewards(config, payload) {
 
   for (const channelId of KF2_MONTHLY_REWARD_DISCORD_CHANNEL_IDS) {
     try {
-      const channel = await client.channels.fetch(channelId);
-      if (!channel || typeof channel.send !== 'function') {
-        logWarn(`Cannot find Discord channel ${channelId} for ${config.name}.`);
-        continue;
-      }
-
       for (const chunk of chunks) {
-        await sendDiscordMessage(channel, {
+        await sendDiscordMessageWithRetry(channelId, {
           content: chunk,
-        });
+        }, `monthly ranking rewards from ${config.name}`);
       }
     } catch (error) {
       logWarn(`Failed to post monthly ranking rewards from ${config.name} to Discord channel ${channelId}: ${error.message || error}`);
