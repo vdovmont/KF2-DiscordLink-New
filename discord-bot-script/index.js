@@ -3715,7 +3715,11 @@ function formatInfoResponse(interaction, request, responsePayload) {
     playerCountParts.push(`${playersDead} dead`);
   }
   if (playerCountParts.length > 0) {
-    lines.push(`Players: ${playerCountParts.join(', ')}`);
+    const playersTotal = [playersAlive, playersDead]
+      .filter((count) => !Number.isNaN(count))
+      .reduce((total, count) => total + count, 0);
+
+    lines.push(`Players: ${playersTotal} total - ${playerCountParts.join(', ')}`);
   }
 
   const multipliers = [
