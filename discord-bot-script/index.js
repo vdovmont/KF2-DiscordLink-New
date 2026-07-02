@@ -2051,7 +2051,7 @@ function getVoteMark(state, player, options = {}) {
 }
 
 function appendVotePlayerSection(lines, title, players, state, options = {}) {
-  if (players.length === 0) {
+  if (players.length === 0 && !options.emptyPlaceholder) {
     return;
   }
 
@@ -2060,6 +2060,11 @@ function appendVotePlayerSection(lines, title, players, state, options = {}) {
   }
 
   lines.push(`\`${title}\``);
+  if (players.length === 0) {
+    lines.push(options.emptyPlaceholder);
+    return;
+  }
+
   for (const player of players) {
     lines.push(`${getVoteMark(state, player, options)}\t${player.name}`);
   }
@@ -2125,7 +2130,9 @@ function formatVoteMessage(state) {
     '',
   ];
 
-  appendVotePlayerSection(lines, 'Current players:', getCurrentVotePlayers(state), state);
+  appendVotePlayerSection(lines, 'Current players:', getCurrentVotePlayers(state), state, {
+    emptyPlaceholder: '-',
+  });
   appendVotePlayerSection(lines, 'Players who left:', getLeftVotePlayers(state), state);
   appendVotePlayerSection(lines, 'Newly joined players:', getJoinedVotePlayers(state), state, {
     forceUnknown: true,
