@@ -27,6 +27,7 @@ const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
 const MILLISECONDS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
+const MONTHLY_RANKING_REWARD_WAIT_SECONDS = 5;
 const initialRuntimeConfig = loadRuntimeConfig(process.env);
 let CDA_AVATAR_URL = initialRuntimeConfig.cdaAvatarUrl;
 let KF2_RECONNECT_DELAY_MS = initialRuntimeConfig.kf2ReconnectDelayMs;
@@ -136,6 +137,7 @@ const DISCORD_MESSAGE_MAX_LENGTH = 2000;
 const DISCORD_ZERO_WIDTH_SPACE = '\u200B';
 const MONTHLY_RANKING_REWARD_CHUNK_PREFIX = `${DISCORD_ZERO_WIDTH_SPACE}\n`;
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
+const MONTHLY_RANKING_REWARD_SUBTYPES = [...DIFFICULTY_ORDER, 'rewards'];
 const RANK_DISPLAY_ORDER = [
   { key: 'normal', label: 'Normal' },
   { key: 'hard', label: 'Hard' },
@@ -315,6 +317,8 @@ const discordMessageRetryLoggedErrorKeys = new Set();
 const kf2Connections = [];
 const activeVotes = new Map();
 const serverWaveNumbers = new Map();
+const monthlyRankingRewardBatches = new Map();
+const monthlyRankingRewardExampleBatches = new Map();
 let envReloadTimer = null;
 let commandTokenState = new Map();
 let commandTokenResetTimer = null;
@@ -2730,6 +2734,276 @@ async function postMonthlyRankingRewards(config, payload) {
   }
 }
 
+function getMonthlyRankingRewardBatchKey(config) {
+  return config.difficulty || config.name || 'default';
+}
+
+function createMonthlyRankingRewardBatch(config) {
+  const key = getMonthlyRankingRewardBatchKey(config);
+  const batch = {
+    key,
+    config,
+    difficulties: {},
+    rewards: { players: [] },
+    receivedSubtypes: new Set(),
+    finalizedSubtypes: new Set(),
+    posting: false,
+    timeout: null,
+  };
+
+  monthlyRankingRewardBatches.set(key, batch);
+  scheduleMonthlyRankingRewardBatchTimeout(batch);
+  return batch;
+}
+
+function getMonthlyRankingRewardBatch(config) {
+  const key = getMonthlyRankingRewardBatchKey(config);
+  return monthlyRankingRewardBatches.get(key) || createMonthlyRankingRewardBatch(config);
+}
+
+function mergeMonthlyRankingRewardPayload(batch, payload) {
+  const subtype = String(payload.subtype || '').trim().toLowerCase();
+  if (!MONTHLY_RANKING_REWARD_SUBTYPES.includes(subtype)) {
+    logWarn(`Received unknown month-ranking-rewards subtype "${payload.subtype}" from ${batch.config.name}.`);
+    return false;
+  }
+
+  const players = Array.isArray(payload.players) ? payload.players : [];
+  batch.receivedSubtypes.add(subtype);
+
+  if (subtype === 'rewards') {
+    batch.rewards.players.push(...players);
+  } else {
+    if (!batch.difficulties[subtype]) {
+      batch.difficulties[subtype] = { players: [] };
+    }
+    batch.difficulties[subtype].players.push(...players);
+  }
+
+  if (payload.final === true) {
+    batch.finalizedSubtypes.add(subtype);
+  }
+
+  return true;
+}
+
+function scheduleMonthlyRankingRewardBatchTimeout(batch) {
+  if (batch.timeout) {
+    clearTimeout(batch.timeout);
+  }
+
+  batch.timeout = setTimeout(() => {
+    void finalizeMonthlyRankingRewardBatch(batch.key, 'timeout');
+  }, MONTHLY_RANKING_REWARD_WAIT_SECONDS * MILLISECONDS_PER_SECOND);
+}
+
+function shouldFinalizeMonthlyRankingRewardBatch(batch) {
+  return MONTHLY_RANKING_REWARD_SUBTYPES.every((subtype) => batch.finalizedSubtypes.has(subtype));
+}
+
+function buildMonthlyRankingRewardPayloadFromBatch(batch) {
+  return {
+    type: 'month-ranking-rewards',
+    difficulties: batch.difficulties,
+    rewards: batch.rewards,
+  };
+}
+
+function buildMonthlyRankingRewardPayloadFromSubtype(payload) {
+  const subtype = String(payload.subtype || '').trim().toLowerCase();
+  const players = Array.isArray(payload.players) ? payload.players : [];
+
+  if (subtype === 'rewards') {
+    return {
+      type: 'month-ranking-rewards',
+      difficulties: {},
+      rewards: { players },
+    };
+  }
+
+  if (DIFFICULTY_ORDER.includes(subtype)) {
+    return {
+      type: 'month-ranking-rewards',
+      difficulties: {
+        [subtype]: { players },
+      },
+      rewards: { players: [] },
+    };
+  }
+
+  return null;
+}
+
+async function finalizeMonthlyRankingRewardBatch(key, reason) {
+  const batch = monthlyRankingRewardBatches.get(key);
+  if (!batch || batch.posting) {
+    return;
+  }
+
+  batch.posting = true;
+  clearTimeout(batch.timeout);
+  monthlyRankingRewardBatches.delete(key);
+
+  if (batch.receivedSubtypes.size === 0) {
+    return;
+  }
+
+  try {
+    await postMonthlyRankingRewards(batch.config, buildMonthlyRankingRewardPayloadFromBatch(batch));
+  } catch (error) {
+    logWarn(`Failed to post merged monthly ranking rewards for "${batch.config.name}" after ${reason}: ${error.message || error}`);
+  }
+}
+
+async function handleMonthlyRankingRewardsPayload(config, payload) {
+  const batch = getMonthlyRankingRewardBatch(config);
+  if (!mergeMonthlyRankingRewardPayload(batch, payload)) {
+    return;
+  }
+  scheduleMonthlyRankingRewardBatchTimeout(batch);
+
+  if (shouldFinalizeMonthlyRankingRewardBatch(batch)) {
+    await finalizeMonthlyRankingRewardBatch(batch.key, 'all subtypes finalized');
+  }
+}
+
+function getMonthlyRankingRewardExampleBatchKey(interaction, hidden) {
+  return hidden
+    ? `hidden:${interaction.user.id}`
+    : `channel:${interaction.channelId || interaction.channel?.id || 'unknown'}`;
+}
+
+function createMonthlyRankingRewardExampleBatch(interaction, hidden) {
+  const key = getMonthlyRankingRewardExampleBatchKey(interaction, hidden);
+  const batch = {
+    key,
+    config: {
+      name: '/example',
+      difficulty: 'example',
+    },
+    channel: interaction.channel,
+    hidden,
+    primaryInteraction: interaction,
+    interactions: [],
+    difficulties: {},
+    rewards: { players: [] },
+    receivedSubtypes: new Set(),
+    finalizedSubtypes: new Set(),
+    posting: false,
+    timeout: null,
+  };
+
+  monthlyRankingRewardExampleBatches.set(key, batch);
+  scheduleMonthlyRankingRewardExampleBatchTimeout(batch);
+  return batch;
+}
+
+function getMonthlyRankingRewardExampleBatch(interaction, hidden) {
+  const key = getMonthlyRankingRewardExampleBatchKey(interaction, hidden);
+  return monthlyRankingRewardExampleBatches.get(key)
+    || createMonthlyRankingRewardExampleBatch(interaction, hidden);
+}
+
+async function notifyMonthlyRankingRewardExampleInteractions(batch, message) {
+  await Promise.all(batch.interactions.map((interaction) =>
+    editDiscordReply(interaction, { content: message }).catch((error) => {
+      logWarn(`Failed to update /example month-ranking-rewards reply: ${error.message || error}`);
+    })));
+}
+
+function scheduleMonthlyRankingRewardExampleBatchTimeout(batch) {
+  if (batch.timeout) {
+    clearTimeout(batch.timeout);
+  }
+
+  batch.timeout = setTimeout(() => {
+    void finalizeMonthlyRankingRewardExampleBatch(batch.key, 'timeout');
+  }, MONTHLY_RANKING_REWARD_WAIT_SECONDS * MILLISECONDS_PER_SECOND);
+}
+
+async function postMonthlyRankingRewardExampleBatch(batch, chunks) {
+  if (batch.hidden) {
+    const [firstChunk, ...remainingChunks] = chunks;
+    await editDiscordReply(batch.primaryInteraction, {
+      content: firstChunk || 'No monthly reward summary was generated.',
+    });
+
+    for (const chunk of remainingChunks) {
+      await followUpDiscordInteraction(batch.primaryInteraction, {
+        content: chunk,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    const remainingInteractions = batch.interactions
+      .filter((interaction) => interaction.id !== batch.primaryInteraction.id);
+    await Promise.all(remainingInteractions.map((interaction) =>
+      editDiscordReply(interaction, {
+        content: 'Merged into the hidden monthly reward example batch.',
+      }).catch((error) => {
+        logWarn(`Failed to update /example month-ranking-rewards reply: ${error.message || error}`);
+      })));
+    return;
+  }
+
+  for (const chunk of chunks) {
+    await sendDiscordMessage(batch.channel, {
+      content: chunk,
+    });
+  }
+
+  await notifyMonthlyRankingRewardExampleInteractions(
+    batch,
+    'Posted merged example response for "/month-ranking-rewards".',
+  );
+}
+
+async function finalizeMonthlyRankingRewardExampleBatch(key, reason) {
+  const batch = monthlyRankingRewardExampleBatches.get(key);
+  if (!batch || batch.posting) {
+    return;
+  }
+
+  batch.posting = true;
+  clearTimeout(batch.timeout);
+  monthlyRankingRewardExampleBatches.delete(key);
+
+  try {
+    const chunks = await splitMonthlyRankingRewardsMessage(buildMonthlyRankingRewardPayloadFromBatch(batch));
+    await postMonthlyRankingRewardExampleBatch(batch, chunks);
+  } catch (error) {
+    logWarn(`Failed to post merged /example monthly ranking rewards after ${reason}: ${error.message || error}`);
+    await notifyMonthlyRankingRewardExampleInteractions(
+      batch,
+      `Failed to post merged example response: ${error.message || error}`,
+    );
+  }
+}
+
+async function handleMonthlyRankingRewardsExamplePayload(interaction, request) {
+  const payload = buildMonthlyRankingRewardPayloadFromSubtype(request.monthRankingRewardsPayload);
+  if (!payload) {
+    throw new Error('Provide a valid subtype-based month-ranking-rewards JSON payload for /example.');
+  }
+
+  const explicitlyHidden = interaction.options.getBoolean('hidden') === true;
+  const batch = getMonthlyRankingRewardExampleBatch(interaction, explicitlyHidden);
+  batch.interactions.push(interaction);
+
+  if (!mergeMonthlyRankingRewardPayload(batch, request.monthRankingRewardsPayload)) {
+    throw new Error('Provide a valid subtype-based month-ranking-rewards JSON payload for /example.');
+  }
+  scheduleMonthlyRankingRewardExampleBatchTimeout(batch);
+
+  await editDiscordReply(interaction, {
+    content: `Queued month-ranking-rewards example part. Waiting up to ${MONTHLY_RANKING_REWARD_WAIT_SECONDS}s for other parts...`,
+  });
+
+  if (shouldFinalizeMonthlyRankingRewardBatch(batch)) {
+    await finalizeMonthlyRankingRewardExampleBatch(batch.key, 'all subtypes finalized');
+  }
+}
+
 class Kf2Connection {
   constructor(config) {
     this.config = config;
@@ -2841,7 +3115,7 @@ class Kf2Connection {
 
       const monthRankingRewardsPayload = parseMonthRankingRewardsPayload(rawLine);
       if (monthRankingRewardsPayload) {
-        void postMonthlyRankingRewards(this.config, monthRankingRewardsPayload);
+        void handleMonthlyRankingRewardsPayload(this.config, monthRankingRewardsPayload);
         return;
       }
 
@@ -2857,7 +3131,7 @@ class Kf2Connection {
 
     const monthRankingRewardsPayload = parseMonthRankingRewardsPayload(message);
     if (monthRankingRewardsPayload) {
-      void postMonthlyRankingRewards(this.config, monthRankingRewardsPayload);
+      void handleMonthlyRankingRewardsPayload(this.config, monthRankingRewardsPayload);
       return;
     }
 
@@ -4186,31 +4460,7 @@ async function buildExampleRequest(interaction) {
 
 async function handleExampleCommand(interaction, request) {
   if (request.commandName === 'month-ranking-rewards') {
-    const chunks = await splitMonthlyRankingRewardsMessage(request.monthRankingRewardsPayload);
-
-    if (request.hidden) {
-      await editDiscordReply(interaction, {
-        content: chunks.shift() || 'No monthly reward summary was generated.',
-      });
-
-      for (const chunk of chunks) {
-        await followUpDiscordInteraction(interaction, {
-          content: chunk,
-          flags: MessageFlags.Ephemeral,
-        });
-      }
-      return;
-    }
-
-    for (const chunk of chunks) {
-      await sendDiscordMessage(interaction.channel, {
-        content: chunk,
-      });
-    }
-
-    await editDiscordReply(interaction, {
-      content: 'Posted example response for "/month-ranking-rewards".',
-    });
+    await handleMonthlyRankingRewardsExamplePayload(interaction, request);
     return;
   }
 
