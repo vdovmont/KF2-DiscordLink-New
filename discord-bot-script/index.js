@@ -1979,14 +1979,15 @@ function clearVoteState(difficulty) {
 
 function buildVoteHeader(state) {
   const difficultyLabel = state.difficultyLabel || getDifficultyLabel(state.difficulty);
+  const highlightedDifficultyLabel = `\`${difficultyLabel}\``;
   const initiator = quoteVotePlayerName(state.initiator);
 
   if (state.subtype === 'kick') {
     const target = quoteVotePlayerName(state.target);
-    return `${difficultyLabel} - ${initiator} initiated kick of ${target}:`;
+    return `${highlightedDifficultyLabel} - ${initiator} initiated kick of ${target}:`;
   }
 
-  return `${difficultyLabel} - ${initiator} initiated ${state.subtype} vote:`;
+  return `${highlightedDifficultyLabel} - ${initiator} initiated ${state.subtype} vote:`;
 }
 
 function getVoteChannelIds(config, subtype) {
@@ -2129,12 +2130,14 @@ function formatVoteMessage(state) {
     fixedMark: '❌',
   });
 
+  const stats = getVotePassStats(state);
+  if (lines.length > 0 && lines[lines.length - 1] !== '') {
+    lines.push('');
+  }
   if (typeof state.result === 'boolean') {
-    const stats = getVotePassStats(state);
-    if (lines.length > 0 && lines[lines.length - 1] !== '') {
-      lines.push('');
-    }
-    lines.push(`Result: (${stats.positivePercent}%/${stats.requiredPercent}%) ${formatVoteBoolean(state.result)}`);
+    lines.push(`\`Result:\` (${stats.positivePercent}%/${stats.requiredPercent}%) ${formatVoteBoolean(state.result)}`);
+  } else {
+    lines.push(`\`Result:\` (${stats.positivePercent}%/${stats.requiredPercent}%)`);
   }
 
   lines.push(separator);
