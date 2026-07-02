@@ -314,6 +314,7 @@ let discordMessageRetryQueuePaused = false;
 const discordMessageRetryLoggedErrorKeys = new Set();
 const kf2Connections = [];
 const activeVotes = new Map();
+const serverWaveNumbers = new Map();
 let envReloadTimer = null;
 let commandTokenState = new Map();
 let commandTokenResetTimer = null;
@@ -1979,7 +1980,11 @@ function clearVoteState(difficulty) {
 
 function buildVoteHeader(state) {
   const difficultyLabel = state.difficultyLabel || getDifficultyLabel(state.difficulty);
-  const highlightedDifficultyLabel = `\`${difficultyLabel}\``;
+  const waveNumber = Number.parseInt(state.waveNumber, 10);
+  const label = Number.isInteger(waveNumber) && waveNumber > 0
+    ? `${difficultyLabel} (wave ${waveNumber})`
+    : difficultyLabel;
+  const highlightedDifficultyLabel = `\`${label}\``;
   const initiator = quoteVotePlayerName(state.initiator);
 
   if (state.subtype === 'kick') {
@@ -2255,6 +2260,34 @@ function parseVotePlayerConnectionLog(content) {
   return null;
 }
 
+function parseStartingWaveLog(content) {
+  const match = String(content || '').trim().match(/^Starting wave\s+(\d+)\b/i);
+  if (!match) {
+    return null;
+  }
+
+  const waveNumber = Number.parseInt(match[1], 10);
+  return Number.isInteger(waveNumber) && waveNumber > 0 ? waveNumber : null;
+}
+
+function updateServerWaveFromChat(config, chatMessage) {
+  const waveNumber = parseStartingWaveLog(chatMessage.content);
+  if (waveNumber === null) {
+    return;
+  }
+
+  const difficulty = getVoteStateKey(config);
+  serverWaveNumbers.set(difficulty, waveNumber);
+
+  const state = activeVotes.get(difficulty);
+  if (!state) {
+    return;
+  }
+
+  state.waveNumber = waveNumber;
+  queueVoteMessageEdit(state);
+}
+
 function updateVotePlayerConnectionFromChat(config, chatMessage) {
   const difficulty = getVoteStateKey(config);
   const state = activeVotes.get(difficulty);
@@ -2297,6 +2330,7 @@ async function startVoteState(config, payload) {
   const state = {
     difficulty,
     difficultyLabel: getDifficultyLabel(difficulty),
+    waveNumber: serverWaveNumbers.get(difficulty) || null,
     subtype: payload.subtype,
     initiator,
     target: normalizeVotePlayerName(payload.target),
@@ -2826,6 +2860,7 @@ class Kf2Connection {
 
     try {
       const chatMessage = parseKf2ChatPayload(message, this.config);
+      updateServerWaveFromChat(this.config, chatMessage);
       updateVotePlayerConnectionFromChat(this.config, chatMessage);
       void forwardKf2ChatToDiscord(this.config, chatMessage);
     } catch (error) {
