@@ -1021,18 +1021,21 @@ function consumeCommandToken(interaction, requestedHidden) {
 function buildHelpMessage() {
   return [
     '**Commands**',
+    '`/help` - Show descriptions of bot commands and their options.',
     '`/info` - Show current status of a selected KF2 server (current map, xp, players etc).',
-    '`/perk` - Show perk levels for a target player.',
-    '`/vipinfo` - Show VIP status for a target player.',
     '`/overdrives` - Show overdrives information for a target player.',
+    '`/perk` - Show perk levels for a target player.',
     '`/rank` - Show rank information for a target player (rank for each server difficulty).',
     '`/rankings` - Show server rankings for a selected difficulty (first 10 players).',
+    '`/vipinfo` - Show VIP status for a target player.',
+    '',
     '`/example` - Preview formatted output from a response payload without using a KF2 server. Not available for public use (devs only).',
     '',
     '**Shared Options**',
     '`target` - Nickname, SteamID64, or Steam profile link. Used by `/perk`, `/vipinfo`, `/overdrives`, and `/rank`.',
     '`difficulty` - Shows currently online KF2 servers. Used by `/info` and `/rankings`.',
     '`hidden` - If true, only you will see the response. By default is false. Available for every command.',
+    '',
     '`raw` - Post the raw KF2 response without formatting. Not available for public use (devs only).',
   ].join('\n');
 }
