@@ -17,6 +17,8 @@ const stringWidth = stringWidthModule.default || stringWidthModule;
 
 const ENV_FILE_PATH = path.resolve(__dirname, '.env');
 const USER_TOKENS_FILE_PATH = path.resolve(__dirname, 'user_tokens.json');
+const LOGS_DIR_PATH = path.resolve(__dirname, 'logs');
+const LATEST_LOG_FILE_PATH = path.join(LOGS_DIR_PATH, 'latest.log');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -52,6 +54,9 @@ let COMMAND_TOKEN_RESET_SECONDS = initialRuntimeConfig.commandTokenResetSeconds;
 let COMMAND_TOKEN_RESET_ANCHOR = initialRuntimeConfig.commandTokenResetAnchor;
 let COMMAND_COOLDOWN_ROLE_MODE = initialRuntimeConfig.commandCooldownRoleMode;
 let COMMAND_COOLDOWN_ROLE_IDS = initialRuntimeConfig.commandCooldownRoleIds;
+let LOG_FILE_RETENTION_DAYS = initialRuntimeConfig.logFileRetentionDays;
+let fileLoggingInitialized = false;
+let lastLogCleanupDate = '';
 
 function formatLogTimestamp(date = new Date()) {
   const year = date.getFullYear();
@@ -64,8 +69,107 @@ function formatLogTimestamp(date = new Date()) {
   return `${year}.${month}.${day} ${hours}:${minutes}:${seconds}`;
 }
 
+function formatLogFileDate(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
+function parseLogFileDate(fileName) {
+  const match = String(fileName || '').match(/^(\d{4})-(\d{2})-(\d{2})\.log$/);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number.parseInt(match[1], 10);
+  const monthIndex = Number.parseInt(match[2], 10) - 1;
+  const day = Number.parseInt(match[3], 10);
+  const date = new Date(year, monthIndex, day);
+
+  if (
+    date.getFullYear() !== year
+    || date.getMonth() !== monthIndex
+    || date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function ensureLogDirectory() {
+  fs.mkdirSync(LOGS_DIR_PATH, { recursive: true });
+}
+
+function cleanupOldLogFiles(now = new Date()) {
+  if (LOG_FILE_RETENTION_DAYS <= 0) {
+    return;
+  }
+
+  const todayKey = formatLogFileDate(now);
+  if (lastLogCleanupDate === todayKey) {
+    return;
+  }
+
+  ensureLogDirectory();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const cutoff = new Date(today);
+  cutoff.setDate(cutoff.getDate() - (LOG_FILE_RETENTION_DAYS - 1));
+
+  for (const entry of fs.readdirSync(LOGS_DIR_PATH, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const logDate = parseLogFileDate(entry.name);
+    if (logDate && logDate < cutoff) {
+      fs.unlinkSync(path.join(LOGS_DIR_PATH, entry.name));
+    }
+  }
+
+  lastLogCleanupDate = todayKey;
+}
+
+function initializeFileLogging() {
+  if (LOG_FILE_RETENTION_DAYS <= 0) {
+    fileLoggingInitialized = false;
+    lastLogCleanupDate = '';
+    return;
+  }
+
+  ensureLogDirectory();
+  fs.writeFileSync(LATEST_LOG_FILE_PATH, '', 'utf8');
+  fileLoggingInitialized = true;
+  cleanupOldLogFiles();
+}
+
+function writeLogToFiles(line, now = new Date()) {
+  if (LOG_FILE_RETENTION_DAYS <= 0) {
+    return;
+  }
+
+  try {
+    if (!fileLoggingInitialized) {
+      initializeFileLogging();
+    }
+
+    cleanupOldLogFiles(now);
+    const dailyLogFilePath = path.join(LOGS_DIR_PATH, `${formatLogFileDate(now)}.log`);
+    const logLine = `${line}\n`;
+    fs.appendFileSync(dailyLogFilePath, logLine, 'utf8');
+    fs.appendFileSync(LATEST_LOG_FILE_PATH, logLine, 'utf8');
+  } catch (error) {
+    console.error(`[${formatLogTimestamp()}] Failed to write log file: ${error.message || error}`);
+  }
+}
+
 function logWithTimestamp(level, message) {
-  console[level](`[${formatLogTimestamp()}] ${message}`);
+  const now = new Date();
+  const line = `[${formatLogTimestamp(now)}] ${message}`;
+  console[level](line);
+  writeLogToFiles(line, now);
 }
 
 function logInfo(message) {
@@ -271,6 +375,8 @@ function padEndByDiscordTextWidth(value, targetWidth) {
   const padding = Math.max(0, targetWidth - getDiscordTextWidth(text));
   return text + ' '.repeat(padding);
 }
+
+initializeFileLogging();
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   logError('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in .env');
@@ -589,10 +695,13 @@ function loadRuntimeConfig(env = process.env) {
     commandTokenResetAnchor: parseChoice(env.COMMAND_TOKEN_RESET_ANCHOR, ['restart', 'day'], 'day'),
     commandCooldownRoleMode: parseChoice(env.COMMAND_COOLDOWN_ROLE_MODE, ['blacklist', 'whitelist'], 'blacklist'),
     commandCooldownRoleIds: parseRoleIds(env.COMMAND_COOLDOWN_ROLE_IDS),
+    logFileRetentionDays: parseNonNegativeInteger(env.LOG_FILE_RETENTION_DAYS, 7),
   };
 }
 
 function applyRuntimeConfig(config) {
+  const previousLogFileRetentionDays = LOG_FILE_RETENTION_DAYS;
+
   CDA_AVATAR_URL = config.cdaAvatarUrl;
   KF2_RECONNECT_DELAY_MS = config.kf2ReconnectDelayMs;
   KF2_CONNECT_TIMEOUT_MS = config.kf2ConnectTimeoutMs;
@@ -616,6 +725,17 @@ function applyRuntimeConfig(config) {
   COMMAND_TOKEN_RESET_ANCHOR = config.commandTokenResetAnchor;
   COMMAND_COOLDOWN_ROLE_MODE = config.commandCooldownRoleMode;
   COMMAND_COOLDOWN_ROLE_IDS = config.commandCooldownRoleIds;
+  LOG_FILE_RETENTION_DAYS = config.logFileRetentionDays;
+
+  if (LOG_FILE_RETENTION_DAYS <= 0) {
+    fileLoggingInitialized = false;
+    lastLogCleanupDate = '';
+  } else if (previousLogFileRetentionDays <= 0 || !fileLoggingInitialized) {
+    initializeFileLogging();
+  } else {
+    cleanupOldLogFiles();
+  }
+
   pruneCommandTokenState();
   saveCommandTokenState();
   scheduleCommandTokenReset();
