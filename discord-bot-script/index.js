@@ -97,6 +97,150 @@ function logErrorConfig(message) {
   }
 }
 
+function isKf2JsonLikePayload(payload) {
+  const payloadText = String(payload || '').trim();
+  return payloadText.startsWith('{') || payloadText.startsWith('[') || /^\/dsresponse\s/i.test(payloadText);
+}
+
+function isKf2DirectJsonPayload(payload) {
+  const payloadText = String(payload || '').trim();
+  return payloadText.startsWith('{') || payloadText.startsWith('[');
+}
+
+function extractJsonErrorPosition(error) {
+  const message = String(error?.message || '');
+  const match = message.match(/position\s+(\d+)/i);
+  if (!match) {
+    return null;
+  }
+
+  const position = Number.parseInt(match[1], 10);
+  return Number.isInteger(position) ? position : null;
+}
+
+function unescapeJsonParserExcerpt(value) {
+  return String(value || '')
+    .replace(/^\.\.\./, '')
+    .replace(/\.\.\.$/, '')
+    .replace(/\\"/g, '"')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t');
+}
+
+function extractJsonErrorExcerpt(error) {
+  const message = String(error?.message || '');
+  const match = message.match(/,\s*"((?:\\.|[^"\\])*)"\s+is not valid JSON/i);
+  return match ? unescapeJsonParserExcerpt(match[1]) : '';
+}
+
+function findJsonErrorPositionFromExcerpt(text, error) {
+  const excerpt = extractJsonErrorExcerpt(error);
+  if (!excerpt) {
+    return null;
+  }
+
+  const excerptIndex = text.indexOf(excerpt);
+  if (excerptIndex === -1) {
+    return null;
+  }
+
+  const tokenMatch = String(error?.message || '').match(/Unexpected token '([^']*)'/i);
+  if (!tokenMatch) {
+    return excerptIndex;
+  }
+
+  const tokenIndex = excerpt.indexOf(tokenMatch[1]);
+  return excerptIndex + Math.max(0, tokenIndex);
+}
+
+function findJsonErrorPositionFromUnexpectedToken(text, error) {
+  const tokenMatch = String(error?.message || '').match(/Unexpected token '([^']*)'/i);
+  if (!tokenMatch) {
+    return null;
+  }
+
+  const token = tokenMatch[1];
+  const tokenIndex = text.indexOf(token);
+  return tokenIndex === -1 ? null : tokenIndex;
+}
+
+function getJsonErrorPosition(text, error) {
+  return extractJsonErrorPosition(error)
+    ?? findJsonErrorPositionFromExcerpt(text, error)
+    ?? findJsonErrorPositionFromUnexpectedToken(text, error);
+}
+
+function getJsonLineColumn(text, position) {
+  const beforeError = text.slice(0, position);
+  const lines = beforeError.split('\n');
+  return {
+    line: lines.length,
+    column: lines[lines.length - 1].length + 1,
+  };
+}
+
+function escapeJsonSnippet(text) {
+  return text
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+}
+
+function formatJsonErrorSnippet(text, position, radius = 80) {
+  const start = Math.max(0, position - radius);
+  const beforeError = escapeJsonSnippet(text.slice(start, position));
+
+  return `${start > 0 ? '...' : ''}${beforeError}   <----- here`;
+}
+
+function formatJsonParseMessage(error) {
+  return String(error?.message || '')
+    .replace(/\s+in JSON at position\s+\d+/i, '')
+    .replace(/\s+at position\s+\d+/i, '')
+    .replace(/,\s*.*\s+is not valid JSON/i, '');
+}
+
+function summarizeJsonPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return `value type ${typeof payload}`;
+  }
+
+  const keys = Object.keys(payload).slice(0, 10);
+  const summary = [`keys=[${keys.join(', ')}]`];
+  if (Object.prototype.hasOwnProperty.call(payload, 'type')) {
+    summary.push(`type=${JSON.stringify(payload.type)}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'subtype')) {
+    summary.push(`subtype=${JSON.stringify(payload.subtype)}`);
+  }
+
+  return summary.join(', ');
+}
+
+function formatInvalidJsonDetails(payload, error) {
+  if (!error) {
+    const parsedPayload = typeof payload === 'string' ? parseRelayJsonPayload(payload) : payload;
+    return `summary: ${summarizeJsonPayload(parsedPayload)}`;
+  }
+
+  const payloadText = String(payload || '').trim();
+  const responseText = extractRelayResponseText(payloadText);
+  const position = getJsonErrorPosition(responseText, error);
+  if (position === null) {
+    return `parser message: ${formatJsonParseMessage(error)}`;
+  }
+
+  const location = getJsonLineColumn(responseText, position);
+  return `parser message: ${formatJsonParseMessage(error)}; line ${location.line}, column ${location.column}; near: ${formatJsonErrorSnippet(responseText, position)}`;
+}
+
+function logInvalidKf2Json(config, source, payload, reason, error = null) {
+  logWarn(
+    `Invalid KF2 JSON from "${config.name}" (${source}): ${reason}; ${formatInvalidJsonDetails(payload, error)}`,
+  );
+}
+
 function getDiscordTextWidth(value) {
   return stringWidth(String(value).normalize('NFKC'));
 }
@@ -2418,14 +2562,14 @@ function updateVoteState(config, payload) {
   const difficulty = getVoteStateKey(config);
   const state = activeVotes.get(difficulty);
   if (!state) {
-    logWarnConfig(`Received vote update for "${difficulty}" without an active vote.`);
+    logInvalidKf2Json(config, 'vote', payload, `vote update for "${difficulty}" without an active vote`);
     return;
   }
 
   syncVotePlayerSnapshot(state, payload);
   const player = addVotePlayerIfMissing(state, payload.player);
   if (!player || typeof payload.value !== 'boolean') {
-    logWarnConfig(`Received invalid vote update for "${difficulty}".`);
+    logInvalidKf2Json(config, 'vote', payload, `invalid vote update for "${difficulty}"`);
     return;
   }
 
@@ -2442,12 +2586,12 @@ function finishVoteState(config, payload) {
   const difficulty = getVoteStateKey(config);
   const state = activeVotes.get(difficulty);
   if (!state) {
-    logWarnConfig(`Received vote result for "${difficulty}" without an active vote.`);
+    logInvalidKf2Json(config, 'vote', payload, `vote result for "${difficulty}" without an active vote`);
     return;
   }
 
   if (typeof payload.value !== 'boolean') {
-    logWarnConfig(`Received invalid vote result for "${difficulty}".`);
+    logInvalidKf2Json(config, 'vote', payload, `invalid vote result for "${difficulty}"`);
     return;
   }
 
@@ -2473,7 +2617,7 @@ async function handleKf2VotePayload(config, payload) {
     return;
   }
 
-  logWarnConfig(`Received unknown vote subtype "${payload.subtype}" from ${config.name}.`);
+  logInvalidKf2Json(config, 'vote', payload, `unknown vote subtype "${payload.subtype}"`);
 }
 
 function formatRankNumber(value) {
@@ -2764,7 +2908,7 @@ function getMonthlyRankingRewardBatch(config) {
 function mergeMonthlyRankingRewardPayload(batch, payload) {
   const subtype = String(payload.subtype || '').trim().toLowerCase();
   if (!MONTHLY_RANKING_REWARD_SUBTYPES.includes(subtype)) {
-    logWarn(`Received unknown month-ranking-rewards subtype "${payload.subtype}" from ${batch.config.name}.`);
+    logInvalidKf2Json(batch.config, 'month-ranking-rewards', payload, `unknown subtype "${payload.subtype}"`);
     return false;
   }
 
@@ -3107,6 +3251,14 @@ class Kf2Connection {
     try {
       message = unicodeConvert(rawLine);
     } catch (error) {
+      if (isKf2DirectJsonPayload(rawLine)) {
+        const parseResult = getRelayJsonParseResult(rawLine);
+        if (parseResult.error) {
+          logInvalidKf2Json(this.config, 'raw line', rawLine, 'JSON parse failed', parseResult.error);
+          return;
+        }
+      }
+
       const votePayload = parseVotePayload(rawLine);
       if (votePayload) {
         void handleKf2VotePayload(this.config, votePayload);
@@ -3119,8 +3271,25 @@ class Kf2Connection {
         return;
       }
 
+      if (this.tryHandleDsResponse(rawLine)) {
+        return;
+      }
+
+      if (isKf2JsonLikePayload(rawLine)) {
+        logInvalidKf2Json(this.config, 'raw line', rawLine, 'unsupported JSON payload');
+        return;
+      }
+
       logWarn(`Failed to decode KF2 message from "${this.config.name}": ${error.message || error}`);
       return;
+    }
+
+    if (isKf2DirectJsonPayload(message)) {
+      const parseResult = getRelayJsonParseResult(message);
+      if (parseResult.error) {
+        logInvalidKf2Json(this.config, 'decoded line', message, 'JSON parse failed', parseResult.error);
+        return;
+      }
     }
 
     const votePayload = parseVotePayload(message);
@@ -3139,6 +3308,11 @@ class Kf2Connection {
       return;
     }
 
+    if (isKf2JsonLikePayload(message)) {
+      logInvalidKf2Json(this.config, 'decoded line', message, 'unsupported JSON payload');
+      return;
+    }
+
     try {
       const chatMessage = parseKf2ChatPayload(message, this.config);
       updateServerWaveFromChat(this.config, chatMessage);
@@ -3153,6 +3327,11 @@ class Kf2Connection {
     const prefix = '/dsresponse ';
     if (!content.startsWith(prefix)) {
       return false;
+    }
+
+    const parseResult = getRelayJsonParseResult(content);
+    if (parseResult.error) {
+      logInvalidKf2Json(this.config, 'dsresponse', content, 'JSON parse failed', parseResult.error);
     }
 
     if (this.pendingRequest) {
@@ -3599,12 +3778,24 @@ function extractRelayResponseText(responsePayload) {
 }
 
 function parseRelayJsonPayload(responsePayload) {
+  return getRelayJsonParseResult(responsePayload).payload;
+}
+
+function getRelayJsonParseResult(responsePayload) {
   const responseText = extractRelayResponseText(responsePayload);
 
   try {
-    return JSON.parse(responseText);
+    return {
+      payload: JSON.parse(responseText),
+      error: null,
+      responseText,
+    };
   } catch (error) {
-    return null;
+    return {
+      payload: null,
+      error,
+      responseText,
+    };
   }
 }
 
@@ -4218,7 +4409,12 @@ function prependRequestedTargetHeader(request, responseText) {
 
 async function formatResponse(interaction, request, responsePayload) {
   let formattedResponse = responsePayload;
-  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  const parseResult = getRelayJsonParseResult(responsePayload);
+  if (parseResult.error && isKf2JsonLikePayload(responsePayload)) {
+    throw new Error(`Invalid JSON response from KF2 server: ${formatInvalidJsonDetails(responsePayload, parseResult.error)}`);
+  }
+
+  const parsedPayload = parseResult.payload;
   const responseTarget = parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target')
     ? await resolveResponseTargetDisplay(parsedPayload.target)
     : '';
@@ -4388,6 +4584,15 @@ function buildExampleVoteConfig(difficulty) {
   };
 }
 
+function buildExampleJsonValidationError(commandName, responsePayload, expectedPayload) {
+  const parseResult = getRelayJsonParseResult(responsePayload);
+  if (parseResult.error) {
+    return `Invalid JSON for /example ${commandName}: ${formatInvalidJsonDetails(responsePayload, parseResult.error)}`;
+  }
+
+  return `Invalid payload for /example ${commandName}: expected ${expectedPayload}; ${formatInvalidJsonDetails(parseResult.payload, null)}`;
+}
+
 async function buildExampleRequest(interaction) {
   ensureExampleAccess(interaction);
 
@@ -4405,7 +4610,11 @@ async function buildExampleRequest(interaction) {
   if (commandName === 'vote') {
     const votePayload = parseVotePayload(responsePayload);
     if (!votePayload) {
-      throw new Error('Provide a valid vote JSON payload for /example vote.');
+      throw new Error(buildExampleJsonValidationError(
+        'vote',
+        responsePayload,
+        'JSON with type="vote" and string subtype',
+      ));
     }
 
     return {
@@ -4432,7 +4641,11 @@ async function buildExampleRequest(interaction) {
   if (commandName === 'month-ranking-rewards') {
     const monthRankingRewardsPayload = parseMonthRankingRewardsPayload(responsePayload);
     if (!monthRankingRewardsPayload) {
-      throw new Error('Provide a valid month-ranking-rewards JSON payload for /example.');
+      throw new Error(buildExampleJsonValidationError(
+        'month-ranking-rewards',
+        responsePayload,
+        'JSON with type="month-ranking-rewards"',
+      ));
     }
 
     return {
