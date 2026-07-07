@@ -56,6 +56,7 @@ let COMMAND_COOLDOWN_ROLE_MODE = initialRuntimeConfig.commandCooldownRoleMode;
 let COMMAND_COOLDOWN_ROLE_IDS = initialRuntimeConfig.commandCooldownRoleIds;
 let LOG_FILE_RETENTION_DAYS = initialRuntimeConfig.logFileRetentionDays;
 let fileLoggingInitialized = false;
+let fileLogRunSeparatorWritten = false;
 let lastLogCleanupDate = '';
 
 function formatLogTimestamp(date = new Date()) {
@@ -135,6 +136,7 @@ function cleanupOldLogFiles(now = new Date()) {
 function initializeFileLogging() {
   if (LOG_FILE_RETENTION_DAYS <= 0) {
     fileLoggingInitialized = false;
+    fileLogRunSeparatorWritten = false;
     lastLogCleanupDate = '';
     return;
   }
@@ -142,6 +144,7 @@ function initializeFileLogging() {
   ensureLogDirectory();
   fs.writeFileSync(LATEST_LOG_FILE_PATH, '', 'utf8');
   fileLoggingInitialized = true;
+  fileLogRunSeparatorWritten = false;
   cleanupOldLogFiles();
 }
 
@@ -158,8 +161,10 @@ function writeLogToFiles(line, now = new Date()) {
     cleanupOldLogFiles(now);
     const dailyLogFilePath = path.join(LOGS_DIR_PATH, `${formatLogFileDate(now)}.log`);
     const logLine = `${line}\n`;
-    fs.appendFileSync(dailyLogFilePath, logLine, 'utf8');
+    const dailyLogLine = fileLogRunSeparatorWritten ? logLine : `\n${logLine}`;
+    fs.appendFileSync(dailyLogFilePath, dailyLogLine, 'utf8');
     fs.appendFileSync(LATEST_LOG_FILE_PATH, logLine, 'utf8');
+    fileLogRunSeparatorWritten = true;
   } catch (error) {
     console.error(`[${formatLogTimestamp()}] Failed to write log file: ${error.message || error}`);
   }
@@ -729,6 +734,7 @@ function applyRuntimeConfig(config) {
 
   if (LOG_FILE_RETENTION_DAYS <= 0) {
     fileLoggingInitialized = false;
+    fileLogRunSeparatorWritten = false;
     lastLogCleanupDate = '';
   } else if (previousLogFileRetentionDays <= 0 || !fileLoggingInitialized) {
     initializeFileLogging();
