@@ -40,7 +40,8 @@ let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
 let KF2_KICK_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2KickVotePassPercent;
 let KF2_PAUSE_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseVotePassPercent;
 let KF2_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2SkipVotePassPercent;
-let KF2_CONSOLE_LOGS_ENABLED = initialRuntimeConfig.kf2ConsoleLogsEnabled;
+let TOGGLE_VOTE_LOGS = initialRuntimeConfig.toggleVoteLogs;
+let TOGGLE_KF2_RECEIVE_BODY_LOGS = initialRuntimeConfig.toggleKf2ReceiveBodyLogs;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let DISCORD_WEBHOOK_RETRY_INTERVAL_MS = initialRuntimeConfig.discordWebhookRetryIntervalMs;
 let DISCORD_RETRY_QUEUE_MAX_AGE_MS = initialRuntimeConfig.discordRetryQueueMaxAgeMs;
@@ -80,19 +81,19 @@ function logError(message) {
 }
 
 function logInfoConfig(message) {
-  if (KF2_CONSOLE_LOGS_ENABLED) {
+  if (TOGGLE_VOTE_LOGS) {
     logInfo(message);
   }
 }
 
 function logWarnConfig(message) {
-  if (KF2_CONSOLE_LOGS_ENABLED) {
+  if (TOGGLE_VOTE_LOGS) {
     logWarn(message);
   }
 }
 
 function logErrorConfig(message) {
-  if (KF2_CONSOLE_LOGS_ENABLED) {
+  if (TOGGLE_VOTE_LOGS) {
     logError(message);
   }
 }
@@ -239,6 +240,22 @@ function logInvalidKf2Json(config, source, payload, reason, error = null) {
   logWarn(
     `Invalid KF2 JSON from "${config.name}" (${source}): ${reason}; ${formatInvalidJsonDetails(payload, error)}`,
   );
+}
+
+function logReceivedKf2Body(config, payload) {
+  if (!TOGGLE_KF2_RECEIVE_BODY_LOGS) {
+    return;
+  }
+
+  logInfo(`Received KF2 payload from "${config.name}":\n${String(payload || '').trim()}`);
+}
+
+function logExampleResponseBody(commandName, payload) {
+  if (!TOGGLE_KF2_RECEIVE_BODY_LOGS) {
+    return;
+  }
+
+  logInfo(`Received /example ${commandName} response payload:\n${String(payload || '').trim()}`);
 }
 
 function getDiscordTextWidth(value) {
@@ -477,6 +494,14 @@ function parseBoolean(value, defaultValue = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
 }
 
+function parseToggle(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+
+  return String(value).trim().toUpperCase() === 'ON';
+}
+
 function parseInteger(value, defaultValue) {
   const parsedValue = Number.parseInt(value || String(defaultValue), 10);
   return Number.isInteger(parsedValue) ? parsedValue : defaultValue;
@@ -549,7 +574,11 @@ function loadRuntimeConfig(env = process.env) {
     kf2KickVotePassPercent: parsePercent(env.KF2_KICK_VOTE_PASS_PERCENT, 66),
     kf2PauseVotePassPercent: parsePercent(env.KF2_PAUSE_VOTE_PASS_PERCENT, 66),
     kf2SkipVotePassPercent: parsePercent(env.KF2_SKIP_VOTE_PASS_PERCENT, 100),
-    kf2ConsoleLogsEnabled: parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false),
+    toggleVoteLogs: parseToggle(env.TOGGLE_VOTE_LOGS, parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false)),
+    toggleKf2ReceiveBodyLogs: parseToggle(
+      env.TOGGLE_KF2_RECEIVE_BODY_LOGS,
+      parseToggle(env.TOGGLE_FULL_JSON_BODY_LOGS, false),
+    ),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
     discordRetryQueueMaxAgeMs: parseMinutesToMilliseconds(env.DISCORD_RETRY_QUEUE_MAX_AGE_MINUTES, 60),
@@ -575,7 +604,8 @@ function applyRuntimeConfig(config) {
   KF2_KICK_VOTE_PASS_PERCENT = config.kf2KickVotePassPercent;
   KF2_PAUSE_VOTE_PASS_PERCENT = config.kf2PauseVotePassPercent;
   KF2_SKIP_VOTE_PASS_PERCENT = config.kf2SkipVotePassPercent;
-  KF2_CONSOLE_LOGS_ENABLED = config.kf2ConsoleLogsEnabled;
+  TOGGLE_VOTE_LOGS = config.toggleVoteLogs;
+  TOGGLE_KF2_RECEIVE_BODY_LOGS = config.toggleKf2ReceiveBodyLogs;
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
   DISCORD_WEBHOOK_RETRY_INTERVAL_MS = config.discordWebhookRetryIntervalMs;
   DISCORD_RETRY_QUEUE_MAX_AGE_MS = config.discordRetryQueueMaxAgeMs;
@@ -3247,6 +3277,7 @@ class Kf2Connection {
 
   handleRawLine(rawLine) {
     let message;
+    logReceivedKf2Body(this.config, rawLine);
 
     try {
       message = unicodeConvert(rawLine);
@@ -4606,6 +4637,8 @@ async function buildExampleRequest(interaction) {
   if (!responsePayload) {
     throw new Error('Provide a response payload for /example.');
   }
+
+  logExampleResponseBody(commandName, responsePayload);
 
   if (commandName === 'vote') {
     const votePayload = parseVotePayload(responsePayload);
