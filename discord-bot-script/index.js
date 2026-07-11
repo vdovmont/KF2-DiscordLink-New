@@ -3415,7 +3415,6 @@ class Kf2Connection {
 
   handleRawLine(rawLine) {
     let message;
-    logReceivedKf2Body(this.config, rawLine);
 
     try {
       message = unicodeConvert(rawLine);
@@ -3452,6 +3451,8 @@ class Kf2Connection {
       logWarn(`Failed to decode KF2 message from "${this.config.name}": ${error.message || error}`);
       return;
     }
+
+    logReceivedKf2Body(this.config, message);
 
     if (isKf2DirectJsonPayload(message)) {
       const parseResult = getRelayJsonParseResult(message);
