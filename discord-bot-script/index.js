@@ -2938,14 +2938,21 @@ async function buildMonthlyRankingRewardBlocks(payload) {
   if (rewardPlayers.length === 0) {
     rewardLines.push('No VIP rewards delivered.');
   } else {
-    const rows = await Promise.all(rewardPlayers.map(async (player) => {
-      const days = Math.max(0, Number.parseInt(player?.days, 10) || 0);
-      return {
-        days: `+${days}`,
-        dayLabel: days === 1 ? 'Day' : 'Days',
-        player: await resolveSteamIdDisplayName(player?.steamid, displayCache),
-      };
-    }));
+    const rows = (await Promise.all(rewardPlayers
+      .map((player) => ({
+        steamId: player?.steamid,
+        days: Math.max(0, Number.parseInt(player?.days, 10) || 0),
+      }))
+      .map(async (player) => ({
+        dayCount: player.days,
+        player: await resolveSteamIdDisplayName(player.steamId, displayCache),
+      }))))
+      .sort((left, right) => (right.dayCount - left.dayCount) || left.player.localeCompare(right.player))
+      .map((row) => ({
+        days: `+${row.dayCount}`,
+        dayLabel: row.dayCount === 1 ? 'Day' : 'Days',
+        player: row.player,
+      }));
     const daysWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.days)));
     const dayLabelWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.dayLabel)));
 
