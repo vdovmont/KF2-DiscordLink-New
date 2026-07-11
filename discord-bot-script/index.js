@@ -29,7 +29,7 @@ const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
 const MILLISECONDS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
-const MONTHLY_RANKING_REWARD_WAIT_SECONDS = 5;
+const MONTHLY_RANKING_REWARD_WAIT_SECONDS = 10;
 const initialRuntimeConfig = loadRuntimeConfig(process.env);
 let CDA_AVATAR_URL = initialRuntimeConfig.cdaAvatarUrl;
 let KF2_RECONNECT_DELAY_MS = initialRuntimeConfig.kf2ReconnectDelayMs;
@@ -2973,42 +2973,41 @@ async function buildMonthlyRankingRewardBlocks(payload) {
   };
 }
 
-function splitMonthlyRankingRewardCombinedGroup(primarySection, secondarySection, maxLength = DISCORD_MESSAGE_MAX_LENGTH) {
-  const primary = String(primarySection || '').trim();
-  const secondary = String(secondarySection || '').trim();
-
-  if (!primary) {
-    return splitDiscordMessage(secondary, maxLength);
-  }
-
-  if (!secondary) {
-    return splitDiscordMessage(primary, maxLength);
-  }
-
-  const combined = `${primary}\n\n${secondary}`;
-  if (combined.length <= maxLength) {
-    return [combined];
-  }
-
-  return [
-    ...splitDiscordMessage(primary, maxLength),
-    ...splitDiscordMessage(secondary, maxLength),
-  ];
-}
-
 function splitMonthlyRankingRewardBlocks(blocks, maxLength = 2000) {
-  const [firstDifficultySection, ...remainingDifficultySections] = blocks.difficultySections;
-  const chunks = [
-    ...splitMonthlyRankingRewardCombinedGroup(blocks.intro, firstDifficultySection, maxLength),
-  ];
+  const groups = [
+    blocks.intro,
+    ...blocks.difficultySections,
+    blocks.rewards,
+    blocks.note,
+  ]
+    .map((group) => String(group || '').trim())
+    .filter(Boolean);
+  const chunks = [];
 
-  for (const difficultySection of remainingDifficultySections) {
-    chunks.push(...splitDiscordMessage(String(difficultySection || '').trim(), maxLength));
+  for (const group of groups) {
+    const groupChunks = splitDiscordMessage(group, maxLength);
+
+    for (let index = 0; index < groupChunks.length; index += 1) {
+      const content = groupChunks[index];
+      const startsGroup = index === 0;
+      const previous = chunks[chunks.length - 1];
+
+      if (startsGroup && previous) {
+        const combined = `${previous.content}\n\n${content}`;
+        if (combined.length <= maxLength) {
+          previous.content = combined;
+          continue;
+        }
+      }
+
+      chunks.push({
+        content,
+        startsGroup,
+      });
+    }
   }
 
-  chunks.push(...splitMonthlyRankingRewardCombinedGroup(blocks.rewards, blocks.note, maxLength));
-
-  return chunks.filter((chunk) => String(chunk || '').trim());
+  return chunks.filter((chunk) => String(chunk.content || '').trim());
 }
 
 async function splitMonthlyRankingRewardsMessage(payload) {
@@ -3017,7 +3016,13 @@ async function splitMonthlyRankingRewardsMessage(payload) {
     - MONTHLY_RANKING_REWARD_CHUNK_PREFIX.length;
 
   return splitMonthlyRankingRewardBlocks(blocks, monthlyChunkMaxLength)
-    .map((chunk, index) => (index === 0 ? chunk : `${MONTHLY_RANKING_REWARD_CHUNK_PREFIX}${chunk}`));
+    .map((chunk, index) => {
+      if (index === 0 || !chunk.startsGroup) {
+        return chunk.content;
+      }
+
+      return `${MONTHLY_RANKING_REWARD_CHUNK_PREFIX}${chunk.content}`;
+    });
 }
 
 async function postMonthlyRankingRewards(config, payload) {
