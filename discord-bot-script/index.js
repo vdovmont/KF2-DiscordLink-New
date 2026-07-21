@@ -194,6 +194,8 @@ const steamService = new SteamService({
   apiKey: STEAM_API_KEY,
   cacheFilePath: STEAM_USERS_FILE_PATH,
   retentionDays: initialRuntimeConfig.steamUserCacheRetentionDays,
+  logFetches: initialRuntimeConfig.toggleSteamFetchLogs,
+  logCacheUsage: initialRuntimeConfig.toggleSteamCacheLogs,
   logInfo,
   logWarn,
 });
@@ -699,6 +701,8 @@ function loadRuntimeConfig(env = process.env) {
       env.TOGGLE_KF2_RECEIVE_BODY_LOGS,
       parseToggle(env.TOGGLE_FULL_JSON_BODY_LOGS, false),
     ),
+    toggleSteamFetchLogs: parseToggle(env.TOGGLE_STEAM_FETCH_LOGS, false),
+    toggleSteamCacheLogs: parseToggle(env.TOGGLE_STEAM_CACHE_LOGS, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
     discordRetryQueueMaxAgeMs: parseMinutesToMilliseconds(env.DISCORD_RETRY_QUEUE_MAX_AGE_MINUTES, 60),
@@ -730,6 +734,10 @@ function applyRuntimeConfig(config) {
   KF2_SKIP_VOTE_PASS_PERCENT = config.kf2SkipVotePassPercent;
   TOGGLE_VOTE_LOGS = config.toggleVoteLogs;
   TOGGLE_KF2_RECEIVE_BODY_LOGS = config.toggleKf2ReceiveBodyLogs;
+  steamService.setLoggingOptions({
+    logFetches: config.toggleSteamFetchLogs,
+    logCacheUsage: config.toggleSteamCacheLogs,
+  });
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
   DISCORD_WEBHOOK_RETRY_INTERVAL_MS = config.discordWebhookRetryIntervalMs;
   DISCORD_RETRY_QUEUE_MAX_AGE_MS = config.discordRetryQueueMaxAgeMs;

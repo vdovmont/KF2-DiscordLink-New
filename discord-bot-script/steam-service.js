@@ -44,6 +44,8 @@ class SteamService {
     apiKey = '',
     cacheFilePath,
     retentionDays = DEFAULT_RETENTION_DAYS,
+    logFetches = false,
+    logCacheUsage = false,
     logInfo = () => {},
     logWarn = () => {},
     now = () => new Date(),
@@ -51,6 +53,8 @@ class SteamService {
     this.activeApiKey = apiKey;
     this.cacheFilePath = cacheFilePath;
     this.retentionDays = retentionDays;
+    this.logFetches = logFetches;
+    this.logCacheUsage = logCacheUsage;
     this.logInfo = logInfo;
     this.logWarn = logWarn;
     this.now = now;
@@ -71,6 +75,29 @@ class SteamService {
     this.retentionDays = retentionDays;
     this.lastCleanupDate = '';
     this.cleanupExpiredUsersSafely();
+  }
+
+  setLoggingOptions({ logFetches, logCacheUsage }) {
+    this.logFetches = logFetches;
+    this.logCacheUsage = logCacheUsage;
+  }
+
+  logFetch(message) {
+    if (this.logFetches) {
+      this.logInfo(message);
+    }
+  }
+
+  logCache(message) {
+    if (this.logCacheUsage) {
+      this.logInfo(message);
+    }
+  }
+
+  logCacheWarning(message) {
+    if (this.logCacheUsage) {
+      this.logWarn(message);
+    }
   }
 
   normalizeSteamId(rawSteamId) {
@@ -299,6 +326,7 @@ class SteamService {
       (user) => user.vanityName.toLowerCase() === normalizedVanityName,
     );
     if (cachedUser) {
+      this.logCache(`Using cached Steam vanity mapping "${vanityName}" -> ${cachedUser.steamId}.`);
       const player = await this.ensureSteamIdExists(cachedUser.steamId);
       return {
         steamId: cachedUser.steamId,
@@ -322,6 +350,7 @@ class SteamService {
       throw new Error('Steam vanity profile links require STEAM_API_KEY to resolve.');
     }
 
+    this.logFetch(`Fetching SteamID for vanity name "${vanityName}" because no cached mapping exists.`);
     const url = new URL('https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/');
     url.searchParams.set('key', this.activeApiKey);
     url.searchParams.set('vanityurl', vanityName);
@@ -345,6 +374,7 @@ class SteamService {
 
     const player = await this.ensureSteamIdExists(steamId);
     this.saveVanityMapping(steamId, vanityName);
+    this.logFetch(`Saved Steam vanity mapping "${vanityName}" -> ${steamId}.`);
     return { steamId, steamApiChecked: Boolean(player), player };
   }
 
@@ -532,8 +562,15 @@ class SteamService {
 
     if (
       isSameLocalDay(storedUser?.lastFetchedAt, now)
-      || !this.activeApiKey
     ) {
+      this.logCache(`Using cached Steam user information for ${normalizedSteamId}; fetched today at ${storedUser.lastFetchedAt}.`);
+      return cachedUser;
+    }
+
+    if (!this.activeApiKey) {
+      if (cachedUser) {
+        this.logCache(`Using cached Steam user information for ${normalizedSteamId} because Steam API is unavailable; last fetched at ${cachedUser.lastFetchedAt}.`);
+      }
       return cachedUser;
     }
 
@@ -544,9 +581,17 @@ class SteamService {
   }
 
   async refreshCachedUser(steamId, cachedUser) {
+    const fetchReason = cachedUser
+      ? `cached information is stale (last fetched at ${cachedUser.lastFetchedAt})`
+      : 'no cached information exists';
+    this.logFetch(`Fetching Steam user information for ${steamId} because ${fetchReason}.`);
+
     try {
       const player = await this.fetchPlayerSummaryFromApi(steamId);
       if (!player) {
+        if (cachedUser) {
+          this.logCache(`Using cached Steam user information for ${steamId} because Steam returned no updated data.`);
+        }
         return cachedUser;
       }
 
@@ -559,13 +604,14 @@ class SteamService {
       };
       this.users.set(steamId, refreshedUser);
       this.saveCache();
+      this.logFetch(`Saved refreshed Steam user information for ${steamId} (${refreshedUser.nickname || 'unknown nickname'}).`);
       return refreshedUser;
     } catch (error) {
       if (!cachedUser) {
         throw error;
       }
 
-      this.logWarn(`Could not refresh cached Steam user ${steamId}; using saved information: ${error.message || error}`);
+      this.logCacheWarning(`Could not refresh Steam user ${steamId}; using cached information: ${error.message || error}`);
       return cachedUser;
     }
   }
