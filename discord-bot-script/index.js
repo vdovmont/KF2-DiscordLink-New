@@ -14,9 +14,11 @@ const net = require('net');
 const path = require('path');
 const stringWidthModule = require('string-width');
 const stringWidth = stringWidthModule.default || stringWidthModule;
+const { SteamService } = require('./steam-service');
 
 const ENV_FILE_PATH = path.resolve(__dirname, '.env');
 const USER_TOKENS_FILE_PATH = path.resolve(__dirname, 'user_tokens.json');
+const STEAM_USERS_FILE_PATH = path.resolve(__dirname, 'steam_users.json');
 const LOGS_DIR_PATH = path.resolve(__dirname, 'logs');
 const LATEST_LOG_FILE_PATH = path.join(LOGS_DIR_PATH, 'latest.log');
 
@@ -24,7 +26,6 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
-let activeSteamApiKey = STEAM_API_KEY;
 const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
 const MILLISECONDS_PER_SECOND = 1000;
@@ -188,6 +189,14 @@ function logWarn(message) {
 function logError(message) {
   logWithTimestamp('error', message);
 }
+
+const steamService = new SteamService({
+  apiKey: STEAM_API_KEY,
+  cacheFilePath: STEAM_USERS_FILE_PATH,
+  retentionDays: initialRuntimeConfig.steamUserCacheRetentionDays,
+  logInfo,
+  logWarn,
+});
 
 function logInfoConfig(message) {
   if (TOGGLE_VOTE_LOGS) {
@@ -701,6 +710,7 @@ function loadRuntimeConfig(env = process.env) {
     commandCooldownRoleMode: parseChoice(env.COMMAND_COOLDOWN_ROLE_MODE, ['blacklist', 'whitelist'], 'blacklist'),
     commandCooldownRoleIds: parseRoleIds(env.COMMAND_COOLDOWN_ROLE_IDS),
     logFileRetentionDays: parseNonNegativeInteger(env.LOG_FILE_RETENTION_DAYS, 7),
+    steamUserCacheRetentionDays: parsePositiveInteger(env.STEAM_USER_CACHE_RETENTION_DAYS, 30),
   };
 }
 
@@ -731,6 +741,7 @@ function applyRuntimeConfig(config) {
   COMMAND_COOLDOWN_ROLE_MODE = config.commandCooldownRoleMode;
   COMMAND_COOLDOWN_ROLE_IDS = config.commandCooldownRoleIds;
   LOG_FILE_RETENTION_DAYS = config.logFileRetentionDays;
+  steamService.setRetentionDays(config.steamUserCacheRetentionDays);
 
   if (LOG_FILE_RETENTION_DAYS <= 0) {
     fileLoggingInitialized = false;
@@ -1575,67 +1586,12 @@ function parseKf2ChatPayload(message, config) {
   }
 
   return {
-    steamId: normalizeSteamId(parts[0]),
+    steamId: steamService.normalizeSteamId(parts[0]),
     username: parts[1],
     content: parts.slice(2).join('^$'),
     avatarUrl: '',
     serverName: config.name,
   };
-}
-
-function normalizeSteamId(rawSteamId) {
-  const value = String(rawSteamId || '').trim();
-  if (!value) {
-    return '';
-  }
-
-  try {
-    if (/^[+-]?0x[0-9a-f]+$/i.test(value)) {
-      return BigInt(value).toString(10);
-    }
-
-    if (/^[+-]?\d+$/.test(value)) {
-      return BigInt(value).toString(10);
-    }
-  } catch (error) {
-    logWarn(`Could not normalize SteamID "${value}": ${error.message || error}`);
-  }
-
-  return value;
-}
-
-async function resolveSteamAvatarUrl(steamId, username) {
-  if (!activeSteamApiKey || !steamId) {
-    return '';
-  }
-
-  try {
-    const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
-    url.searchParams.set('key', activeSteamApiKey);
-    url.searchParams.set('steamids', steamId);
-
-    const response = await fetch(url);
-    if (response.status === 401 || response.status === 403) {
-      activeSteamApiKey = '';
-      logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
-      return '';
-    }
-
-    if (!response.ok) {
-      throw new Error(`${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    const avatarUrl = data?.response?.players?.[0]?.avatar || '';
-    if (!avatarUrl) {
-      logWarn(`Steam API returned no avatar for ${username} (${steamId}).`);
-    }
-
-    return avatarUrl;
-  } catch (error) {
-    logWarn(`Could not retrieve ${username}'s avatar: ${error.message || error}`);
-    return '';
-  }
 }
 
 function wait(milliseconds) {
@@ -2161,16 +2117,20 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
     return;
   }
 
-  const avatarUrl = chatMessage.avatarUrl || await resolveSteamAvatarUrl(chatMessage.steamId, chatMessage.username);
+  const steamUser = chatMessage.avatarUrl
+    ? { username: chatMessage.username, avatarUrl: chatMessage.avatarUrl }
+    : await steamService.resolveChatUser(chatMessage.steamId, chatMessage.username);
+  const username = steamUser.username;
+  const avatarUrl = steamUser.avatarUrl;
 
   try {
     if (config.webhookUrl) {
       if (!avatarUrl) {
-        logWarn(`Posting webhook message for ${chatMessage.username} without avatar_url.`);
+        logWarn(`Posting webhook message for ${username} without avatar_url.`);
       }
 
       const payload = {
-        username: chatMessage.username,
+        username,
         avatar_url: avatarUrl || undefined,
         content: chatMessage.content,
       };
@@ -2209,7 +2169,7 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
         }
 
         const payload = {
-          content: `[${config.name}] ${chatMessage.username}: ${chatMessage.content}`,
+          content: `[${config.name}] ${username}: ${chatMessage.content}`,
         };
 
         try {
@@ -2794,47 +2754,6 @@ function getMonthlyVipDaysForRank(rank) {
   return Math.max(11 - rankValue, 0);
 }
 
-function normalizeSteamIdText(value) {
-  return String(value || '').trim();
-}
-
-async function resolveResponseTargetDisplay(target, cache = new Map()) {
-  const normalizedTarget = String(target || '').trim();
-  if (!normalizedTarget) {
-    return '';
-  }
-
-  if (isValidSteamId64(normalizedTarget)) {
-    return resolveSteamIdDisplayName(normalizedTarget, cache);
-  }
-
-  return normalizedTarget;
-}
-
-async function resolveSteamIdDisplayName(steamId, cache) {
-  const normalizedSteamId = normalizeSteamIdText(steamId);
-  if (!normalizedSteamId) {
-    return 'Unknown';
-  }
-
-  if (cache.has(normalizedSteamId)) {
-    return cache.get(normalizedSteamId);
-  }
-
-  let displayName = normalizedSteamId;
-  if (isValidSteamId64(normalizedSteamId) && activeSteamApiKey) {
-    try {
-      const player = await ensureSteamIdExists(normalizedSteamId);
-      displayName = formatSteamProfileDisplay(normalizedSteamId, player);
-    } catch (error) {
-      logWarn(`Could not resolve Steam profile ${normalizedSteamId}: ${error.message || error}`);
-    }
-  }
-
-  cache.set(normalizedSteamId, displayName);
-  return displayName;
-}
-
 async function buildMonthlyRewardDisplayCache(payload) {
   const cache = new Map();
   const steamIds = new Set();
@@ -2845,17 +2764,17 @@ async function buildMonthlyRewardDisplayCache(payload) {
     }
 
     for (const player of difficulty.players) {
-      steamIds.add(normalizeSteamIdText(player?.steamid));
+      steamIds.add(steamService.normalizeSteamId(player?.steamid));
     }
   }
 
   for (const player of payload.rewards?.players || []) {
-    steamIds.add(normalizeSteamIdText(player?.steamid));
+    steamIds.add(steamService.normalizeSteamId(player?.steamid));
   }
 
   for (const steamId of steamIds) {
     if (steamId) {
-      await resolveSteamIdDisplayName(steamId, cache);
+      await steamService.resolveSteamIdDisplayName(steamId, cache);
     }
   }
 
@@ -2892,7 +2811,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
     const lines = [`${getDifficultyLabel(difficultyKey)}:`];
     const players = difficulty.players
       .map((player) => ({
-        steamId: normalizeSteamIdText(player?.steamid),
+        steamId: steamService.normalizeSteamId(player?.steamid),
         rank: Number.parseInt(player?.rank, 10),
         points: Number.parseInt(player?.points, 10),
       }))
@@ -2912,7 +2831,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
         points: `${Number.isInteger(player.points) ? player.points : 0} points`,
         rewardDays: rewardDays === 0 ? '' : `+${rewardDays}`,
         dayLabel: rewardDays === 0 ? '' : rewardDays === 1 ? 'day' : 'days',
-        player: await resolveSteamIdDisplayName(player.steamId, displayCache),
+        player: await steamService.resolveSteamIdDisplayName(player.steamId, displayCache),
       };
     }));
     const rankWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.rank)));
@@ -2945,7 +2864,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
       }))
       .map(async (player) => ({
         dayCount: player.days,
-        player: await resolveSteamIdDisplayName(player.steamId, displayCache),
+        player: await steamService.resolveSteamIdDisplayName(player.steamId, displayCache),
       }))))
       .sort((left, right) => (right.dayCount - left.dayCount) || left.player.localeCompare(right.player))
       .map((row) => ({
@@ -3577,228 +3496,6 @@ class Kf2Connection {
   }
 }
 
-function isValidSteamId64(steamId) {
-  if (typeof steamId !== 'string') {
-    return false;
-  }
-
-  const trimmedSteamId = steamId.trim();
-  if (!/^\d{17}$/.test(trimmedSteamId)) {
-    return false;
-  }
-
-  try {
-    const value = BigInt(trimmedSteamId);
-    return value >= 76561197960265728n && value <= 99999999999999999n;
-  } catch (error) {
-    return false;
-  }
-}
-
-function parseSteamProfileTarget(rawTarget) {
-  const target = String(rawTarget || '').trim();
-  if (!target) {
-    return null;
-  }
-
-  let urlText = target;
-  if (/^(?:www\.)?steamcommunity\.com(?:[/?#]|$)/i.test(urlText)) {
-    urlText = `https://${urlText}`;
-  }
-
-  let url;
-  try {
-    url = new URL(urlText);
-  } catch (error) {
-    return null;
-  }
-
-  const hostname = url.hostname.toLowerCase();
-  if (hostname !== 'steamcommunity.com' && hostname !== 'www.steamcommunity.com') {
-    return null;
-  }
-
-  let pathParts;
-  try {
-    pathParts = url.pathname
-      .split('/')
-      .filter(Boolean)
-      .map((part) => decodeURIComponent(part));
-  } catch (error) {
-    return { type: 'invalid' };
-  }
-
-  if (pathParts.length < 2) {
-    return { type: 'invalid' };
-  }
-
-  const profileType = pathParts[0].toLowerCase();
-  if (profileType === 'profiles') {
-    return {
-      type: 'steamid',
-      steamId: pathParts[1],
-    };
-  }
-
-  if (profileType === 'id') {
-    return {
-      type: 'vanity',
-      vanityName: pathParts[1],
-    };
-  }
-
-  return { type: 'invalid' };
-}
-
-async function getSteamPlayerSummary(steamId) {
-  if (!activeSteamApiKey) {
-    return null;
-  }
-
-  const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
-  url.searchParams.set('key', activeSteamApiKey);
-  url.searchParams.set('steamids', steamId);
-
-  const response = await fetch(url);
-  if (response.status === 401 || response.status === 403) {
-    activeSteamApiKey = '';
-    logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
-    return null;
-  }
-
-  if (!response.ok) {
-    throw new Error(`Steam API request failed: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  return data?.response?.players?.[0] || null;
-}
-
-async function ensureSteamIdExists(steamId) {
-  if (!isValidSteamId64(steamId)) {
-    throw new Error('Invalid Steam target. Provide a valid nickname, SteamID64 or Steam profile link.');
-  }
-
-  if (!activeSteamApiKey) {
-    return null;
-  }
-
-  const player = await getSteamPlayerSummary(steamId);
-  if (!activeSteamApiKey) {
-    return null;
-  }
-
-  if (!player) {
-    throw new Error(`Steam profile not found for SteamID64 ${steamId}.`);
-  }
-
-  return player;
-}
-
-function escapeDiscordMarkdownLinkText(value) {
-  return String(value || '').replace(/([\\[\]])/g, '\\$1');
-}
-
-function getSteamProfileUrl(steamId, player) {
-  return player?.profileurl || `https://steamcommunity.com/profiles/${steamId}/`;
-}
-
-function formatSteamProfileDisplay(steamId, player) {
-  if (!player) {
-    return steamId;
-  }
-
-  const label = player?.personaname || steamId;
-  return `[${escapeDiscordMarkdownLinkText(label)}](${getSteamProfileUrl(steamId, player)})`;
-}
-
-async function resolveSteamVanityUrl(vanityName) {
-  if (!activeSteamApiKey) {
-    throw new Error('Steam vanity profile links require STEAM_API_KEY to resolve.');
-  }
-
-  const url = new URL('https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/');
-  url.searchParams.set('key', activeSteamApiKey);
-  url.searchParams.set('vanityurl', vanityName);
-
-  const response = await fetch(url);
-  if (response.status === 401 || response.status === 403) {
-    activeSteamApiKey = '';
-    logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
-    throw new Error('Steam vanity profile links require a valid STEAM_API_KEY to resolve.');
-  }
-
-  if (!response.ok) {
-    throw new Error(`Steam API request failed: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  const steamId = data?.response?.steamid;
-  if (data?.response?.success !== 1 || !steamId) {
-    throw new Error(`Steam vanity profile "${vanityName}" was not found.`);
-  }
-
-  const player = await ensureSteamIdExists(steamId);
-  return {
-    steamId,
-    steamApiChecked: Boolean(player),
-    player,
-  };
-}
-
-async function resolvePlayerTarget(rawTarget) {
-  const target = String(rawTarget || '').trim();
-  if (!target) {
-    throw new Error('Provide a target.');
-  }
-
-  const steamProfileTarget = parseSteamProfileTarget(target);
-  if (steamProfileTarget) {
-    if (steamProfileTarget.type === 'steamid') {
-      const player = await ensureSteamIdExists(steamProfileTarget.steamId);
-      return {
-        type: 'steamid',
-        value: steamProfileTarget.steamId,
-        display: formatSteamProfileDisplay(steamProfileTarget.steamId, player),
-        source: 'profile-link',
-        steamApiChecked: Boolean(player),
-      };
-    }
-
-    if (steamProfileTarget.type === 'vanity') {
-      const { steamId, steamApiChecked, player } = await resolveSteamVanityUrl(steamProfileTarget.vanityName);
-      return {
-        type: 'steamid',
-        value: steamId,
-        display: formatSteamProfileDisplay(steamId, player),
-        source: 'vanity-link',
-        steamApiChecked,
-      };
-    }
-
-    throw new Error('Invalid Steam profile link. Use steamcommunity.com/profiles/<steamid64> or steamcommunity.com/id/<name>.');
-  }
-
-  if (/^\d{17}$/.test(target)) {
-    const player = await ensureSteamIdExists(target);
-    return {
-      type: 'steamid',
-      value: target,
-      display: formatSteamProfileDisplay(target, player),
-      source: 'steamid',
-      steamApiChecked: Boolean(player),
-    };
-  }
-
-  return {
-    type: 'nickname',
-    value: target,
-    display: target,
-    source: 'nickname',
-    steamApiChecked: false,
-  };
-}
-
 function buildPlayerTargetPayload(commandName, target) {
   return `/dsrequest ${commandName} ${target.type}:${target.value}`;
 }
@@ -3840,8 +3537,8 @@ async function formatResponseTargetResolutionExample(responsePayload) {
     ].join('\n');
   }
 
-  const display = await resolveResponseTargetDisplay(responseTarget);
-  const detectedAs = isValidSteamId64(responseTarget) ? 'steamid' : 'nickname';
+  const display = await steamService.resolveResponseTargetDisplay(responseTarget);
+  const detectedAs = steamService.isValidSteamId64(responseTarget) ? 'steamid' : 'nickname';
 
   return [
     `Response: ${suppressDiscordLinkEmbeds(responsePayload)}`,
@@ -3858,7 +3555,7 @@ async function buildTargetRelayRequest(interaction, commandName, hidden, raw) {
     throw new Error('No active difficulties are available right now.');
   }
 
-  const target = await resolvePlayerTarget(interaction.options.getString('target', true));
+  const target = await steamService.resolvePlayerTarget(interaction.options.getString('target', true));
 
   return {
     commandName,
@@ -4586,7 +4283,7 @@ async function formatResponse(interaction, request, responsePayload) {
 
   const parsedPayload = parseResult.payload;
   const responseTarget = parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target')
-    ? await resolveResponseTargetDisplay(parsedPayload.target)
+    ? await steamService.resolveResponseTargetDisplay(parsedPayload.target)
     : '';
   const effectiveRequest = responseTarget
     ? { ...request, requestedTarget: responseTarget }
@@ -4830,7 +4527,7 @@ async function buildExampleRequest(interaction) {
   }
 
   const resolvedTarget = targetInput
-    ? await resolvePlayerTarget(targetInput)
+    ? await steamService.resolvePlayerTarget(targetInput)
     : null;
 
   return {
@@ -4869,7 +4566,7 @@ async function handleExampleCommand(interaction, request) {
     }
 
     try {
-      const target = await resolvePlayerTarget(request.targetInput);
+      const target = await steamService.resolvePlayerTarget(request.targetInput);
       await editDiscordReply(interaction, {
         content: formatTargetResolutionExample(request.targetInput, target),
       });
@@ -4939,33 +4636,6 @@ async function handleAutocomplete(interaction) {
   await interaction.respond(choices);
 }
 
-async function validateSteamApiKeyOnStartup() {
-  if (!activeSteamApiKey) {
-    return;
-  }
-
-  try {
-    const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/');
-    url.searchParams.set('key', activeSteamApiKey);
-    url.searchParams.set('steamids', '76561197960265728');
-
-    const response = await fetch(url);
-    if (response.status === 401 || response.status === 403) {
-      activeSteamApiKey = '';
-      logWarn('STEAM_API_KEY is invalid; continuing with Steam lookups disabled.');
-      return;
-    }
-
-    if (!response.ok) {
-      throw new Error(`${response.status} ${response.statusText}`);
-    }
-
-    logInfo('STEAM_API_KEY validated successfully.');
-  } catch (error) {
-    logWarn(`Could not validate STEAM_API_KEY: ${error.message || error}`);
-  }
-}
-
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
 
@@ -5004,7 +4674,7 @@ const client = new Client({
 client.once(Events.ClientReady, async (readyClient) => {
   logInfo(`Logged in as ${readyClient.user.tag}`);
   try {
-    await validateSteamApiKeyOnStartup();
+    await steamService.validateApiKey();
     initializeKf2Connections();
   } catch (error) {
     logError(error.message || error);
@@ -5158,6 +4828,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 envFileSnapshot = readEnvSnapshotFromFile();
+steamService.initialize();
 loadCommandTokenState();
 scheduleCommandTokenReset();
 scheduleWebhookRetryQueue();
