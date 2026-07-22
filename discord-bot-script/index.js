@@ -14,6 +14,11 @@ const net = require('net');
 const path = require('path');
 const stringWidthModule = require('string-width');
 const stringWidth = stringWidthModule.default || stringWidthModule;
+const {
+  CountryService,
+  createUnknownCountryResponse,
+  isCountryByIpRequest,
+} = require('./country-service');
 const { SteamService } = require('./steam-service');
 
 const ENV_FILE_PATH = path.resolve(__dirname, '.env');
@@ -26,6 +31,7 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const STEAM_API_KEY = process.env.STEAM_API_KEY || '';
+const IPINFO_TOKEN = process.env.IPINFO_TOKEN || '';
 const KF2_SERVER_MESSAGE_STEAM_ID = '0x011000010A2A86B6';
 const KF2_SERVER_COUNT = 5;
 const MILLISECONDS_PER_SECOND = 1000;
@@ -45,6 +51,7 @@ let KF2_PAUSE_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseVotePassPercent;
 let KF2_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2SkipVotePassPercent;
 let TOGGLE_VOTE_LOGS = initialRuntimeConfig.toggleVoteLogs;
 let TOGGLE_KF2_RECEIVE_BODY_LOGS = initialRuntimeConfig.toggleKf2ReceiveBodyLogs;
+let TOGGLE_COUNTRY_BY_IP_LOGS = initialRuntimeConfig.toggleCountryByIpLogs;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let DISCORD_WEBHOOK_RETRY_INTERVAL_MS = initialRuntimeConfig.discordWebhookRetryIntervalMs;
 let DISCORD_RETRY_QUEUE_MAX_AGE_MS = initialRuntimeConfig.discordRetryQueueMaxAgeMs;
@@ -198,6 +205,10 @@ const steamService = new SteamService({
   logCacheUsage: initialRuntimeConfig.toggleSteamCacheLogs,
   logInfo,
   logWarn,
+});
+
+const countryService = new CountryService({
+  token: IPINFO_TOKEN,
 });
 
 function logInfoConfig(message) {
@@ -376,6 +387,14 @@ function logExampleResponseBody(commandName, payload) {
   }
 
   logInfo(`Received /example ${commandName} response payload:\n${String(payload || '').trim()}`);
+}
+
+function logCountryByIpPayload(direction, source, payload) {
+  if (!TOGGLE_COUNTRY_BY_IP_LOGS) {
+    return;
+  }
+
+  logInfo(`country_by_ip ${direction} (${source}):\n${JSON.stringify(payload)}`);
 }
 
 function getDiscordTextWidth(value) {
@@ -703,6 +722,7 @@ function loadRuntimeConfig(env = process.env) {
     ),
     toggleSteamFetchLogs: parseToggle(env.TOGGLE_STEAM_FETCH_LOGS, false),
     toggleSteamCacheLogs: parseToggle(env.TOGGLE_STEAM_CACHE_LOGS, false),
+    toggleCountryByIpLogs: parseToggle(env.TOGGLE_COUNTRY_BY_IP_LOGS, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
     discordRetryQueueMaxAgeMs: parseMinutesToMilliseconds(env.DISCORD_RETRY_QUEUE_MAX_AGE_MINUTES, 60),
@@ -734,6 +754,7 @@ function applyRuntimeConfig(config) {
   KF2_SKIP_VOTE_PASS_PERCENT = config.kf2SkipVotePassPercent;
   TOGGLE_VOTE_LOGS = config.toggleVoteLogs;
   TOGGLE_KF2_RECEIVE_BODY_LOGS = config.toggleKf2ReceiveBodyLogs;
+  TOGGLE_COUNTRY_BY_IP_LOGS = config.toggleCountryByIpLogs;
   steamService.setLoggingOptions({
     logFetches: config.toggleSteamFetchLogs,
     logCacheUsage: config.toggleSteamCacheLogs,
@@ -778,6 +799,7 @@ function isStartupOnlyEnvKey(key) {
     'CLIENT_ID',
     'GUILD_ID',
     'STEAM_API_KEY',
+    'IPINFO_TOKEN',
   ].includes(key);
 }
 
@@ -1432,6 +1454,7 @@ const commandDefinitions = [
             { name: 'overdrives', value: 'overdrives' },
             { name: 'rank', value: 'rank' },
             { name: 'rankings', value: 'rankings' },
+            { name: 'country_by_ip', value: 'country_by_ip' },
             { name: 'month-ranking-rewards', value: 'month-ranking-rewards' },
             { name: 'target', value: 'target' },
             { name: 'vote', value: 'vote' },
@@ -1440,7 +1463,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('response')
-          .setDescription('Text to treat as the KF2 response payload')
+          .setDescription('KF2 response payload, or request payload for country_by_ip')
           .setRequired(true),
       )
       .addStringOption((option) =>
@@ -3251,6 +3274,7 @@ class Kf2Connection {
     this.connected = false;
     this.reconnectTimer = null;
     this.pendingRequest = null;
+    this.countryRequestQueue = Promise.resolve();
     this.manuallyStopped = false;
   }
 
@@ -3354,6 +3378,10 @@ class Kf2Connection {
         }
       }
 
+      if (this.tryHandleCountryByIpRequest(rawLine)) {
+        return;
+      }
+
       const votePayload = parseVotePayload(rawLine);
       if (votePayload) {
         void handleKf2VotePayload(this.config, votePayload);
@@ -3387,6 +3415,10 @@ class Kf2Connection {
         logInvalidKf2Json(this.config, 'decoded line', message, 'JSON parse failed', parseResult.error);
         return;
       }
+    }
+
+    if (this.tryHandleCountryByIpRequest(message)) {
+      return;
     }
 
     const votePayload = parseVotePayload(message);
@@ -3439,6 +3471,41 @@ class Kf2Connection {
     }
 
     return true;
+  }
+
+  tryHandleCountryByIpRequest(content) {
+    if (!isKf2DirectJsonPayload(content)) {
+      return false;
+    }
+
+    const parseResult = getRelayJsonParseResult(content);
+    if (parseResult.error || !isCountryByIpRequest(parseResult.payload)) {
+      return false;
+    }
+
+    this.countryRequestQueue = this.countryRequestQueue
+      .then(() => this.handleCountryByIpRequest(parseResult.payload))
+      .catch((error) => {
+        logWarn(`Failed to answer country_by_ip request from "${this.config.name}": ${error.message || error}`);
+      });
+    return true;
+  }
+
+  async handleCountryByIpRequest(payload) {
+    let response;
+
+    logCountryByIpPayload('request', `KF2 server "${this.config.name}"`, payload);
+
+    try {
+      response = await countryService.resolveRequest(payload);
+    } catch (error) {
+      logWarn(`Country lookup for "${this.config.name}" failed: ${error.message || error}`);
+      response = createUnknownCountryResponse(payload);
+    }
+
+    logCountryByIpPayload('response', `KF2 server "${this.config.name}"`, response);
+
+    this.sendMessage(JSON.stringify(response));
   }
 
   sendMessage(message) {
@@ -4534,6 +4601,24 @@ async function buildExampleRequest(interaction) {
     };
   }
 
+  if (commandName === 'country_by_ip') {
+    const parseResult = getRelayJsonParseResult(responsePayload);
+    if (parseResult.error || !isCountryByIpRequest(parseResult.payload)) {
+      throw new Error(buildExampleJsonValidationError(
+        'country_by_ip',
+        responsePayload,
+        'JSON with type="country_by_ip", subtype="request", and an ip array',
+      ));
+    }
+
+    return {
+      commandName,
+      responsePayload,
+      hidden,
+      countryByIpPayload: parseResult.payload,
+    };
+  }
+
   const resolvedTarget = targetInput
     ? await steamService.resolvePlayerTarget(targetInput)
     : null;
@@ -4549,6 +4634,23 @@ async function buildExampleRequest(interaction) {
 }
 
 async function handleExampleCommand(interaction, request) {
+  if (request.commandName === 'country_by_ip') {
+    logCountryByIpPayload('request', '/example', request.countryByIpPayload);
+    const response = await countryService.resolveRequest(request.countryByIpPayload);
+    logCountryByIpPayload('response', '/example', response);
+    await postResponse(
+      interaction,
+      {
+        commandName: request.commandName,
+        hidden: request.hidden,
+        raw: true,
+      },
+      JSON.stringify(response, null, 2),
+      'Posted the country_by_ip service response.',
+    );
+    return;
+  }
+
   if (request.commandName === 'month-ranking-rewards') {
     await handleMonthlyRankingRewardsExamplePayload(interaction, request);
     return;
