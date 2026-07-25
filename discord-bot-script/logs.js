@@ -6,7 +6,7 @@ const LATEST_LOG_FILE_PATH = path.join(LOGS_DIR_PATH, 'latest.log');
 
 const logSettings = {
   logFileRetentionDays: 7,
-  toggleAllFileLogs: false,
+  toggleAllFileLogs: true,
   vote: false,
   kf2ReceiveBody: false,
   kf2Connection: false,

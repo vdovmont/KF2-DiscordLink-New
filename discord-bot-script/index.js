@@ -557,7 +557,7 @@ function loadRuntimeConfig(env = process.env) {
     toggleSteamFetchLogs: parseToggle(env.TOGGLE_STEAM_FETCH_LOGS, false),
     toggleSteamCacheLogs: parseToggle(env.TOGGLE_STEAM_CACHE_LOGS, false),
     toggleCountryByIpLogs: parseToggle(env.TOGGLE_COUNTRY_BY_IP_LOGS, false),
-    toggleAllFileLogs: parseToggle(env.TOGGLE_ALL_FILE_LOGS, false),
+    toggleAllFileLogs: parseToggle(env.TOGGLE_ALL_FILE_LOGS, true),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
     discordRetryQueueMaxAgeMs: parseMinutesToMilliseconds(env.DISCORD_RETRY_QUEUE_MAX_AGE_MINUTES, 60),
