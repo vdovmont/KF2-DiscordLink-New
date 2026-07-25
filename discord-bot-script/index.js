@@ -2284,21 +2284,32 @@ function clearVoteState(difficulty) {
   activeVotes.delete(difficulty);
 }
 
+function formatVoteTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `[${hours}:${minutes}:${seconds}]`;
+}
+
 function buildVoteHeader(state) {
   const difficultyLabel = state.difficultyLabel || getDifficultyLabel(state.difficulty);
   const waveNumber = Number.parseInt(state.waveNumber, 10);
-  const label = Number.isInteger(waveNumber) && waveNumber > 0
-    ? `${difficultyLabel} (wave ${waveNumber})`
-    : difficultyLabel;
-  const highlightedDifficultyLabel = `\`${label}\``;
+  const timestamp = `\`${formatVoteTimestamp(state.startedAt)}\``;
+  const highlightedDifficultyLabel = `\`${difficultyLabel}\``;
+  const wavePrefix = Number.isInteger(waveNumber) && waveNumber > 0
+    ? `\`Wave ${waveNumber}\` - `
+    : '';
   const initiator = quoteVotePlayerName(state.initiator);
+  const firstLine = `${timestamp} ${highlightedDifficultyLabel}`;
 
   if (state.subtype === 'kick') {
     const target = quoteVotePlayerName(state.target);
-    return `${highlightedDifficultyLabel} - ${initiator} initiated kick of ${target}:`;
+    return `${firstLine}\n${wavePrefix}${initiator} initiated kick of ${target}:`;
   }
 
-  return `${highlightedDifficultyLabel} - ${initiator} initiated ${state.subtype} vote:`;
+  return `${firstLine}\n${wavePrefix}${initiator} initiated ${state.subtype} vote:`;
 }
 
 function getVoteChannelIds(config, subtype) {
@@ -2640,10 +2651,14 @@ async function startVoteState(config, payload) {
   clearVoteState(difficulty);
 
   const initiator = normalizeVotePlayerName(payload.initiator) || 'Unknown';
+  const payloadWaveNumber = Number.parseInt(payload.waveNumber, 10);
   const state = {
+    startedAt: new Date(),
     difficulty,
     difficultyLabel: getDifficultyLabel(difficulty),
-    waveNumber: serverWaveNumbers.get(difficulty) || null,
+    waveNumber: Number.isInteger(payloadWaveNumber) && payloadWaveNumber > 0
+      ? payloadWaveNumber
+      : serverWaveNumbers.get(difficulty) || null,
     subtype: payload.subtype,
     initiator,
     target: normalizeVotePlayerName(payload.target),
