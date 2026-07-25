@@ -432,12 +432,18 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 
-const KNOWN_COMMANDS = ['info', 'perk', 'vipinfo', 'overdrives', 'rank', 'rankings', 'example', 'help'];
+const KNOWN_COMMANDS = ['mapinfo', 'playerinfo', 'perk', 'vipinfo', 'overdrives', 'rank', 'rankings', 'example', 'help'];
 const FORMAT_RESPONSE_ERROR_MESSAGE = 'Oh-oh: something went wrong with response from KF2 server. Please use "raw" option for detailed response.';
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DISCORD_MESSAGE_MAX_LENGTH = 2000;
 const DISCORD_ZERO_WIDTH_SPACE = '\u200B';
 const MONTHLY_RANKING_REWARD_CHUNK_PREFIX = `${DISCORD_ZERO_WIDTH_SPACE}\n`;
+const PLAYER_INFO_COMMANDS = [
+  { commandName: 'perk', title: 'Perks' },
+  { commandName: 'overdrives', title: 'Overdrives' },
+  { commandName: 'vipinfo', title: 'VIP Info' },
+  { commandName: 'rank', title: 'Ranks' },
+];
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
 const MONTHLY_RANKING_REWARD_SUBTYPES = [...DIFFICULTY_ORDER, 'rewards'];
 const RANK_DISPLAY_ORDER = [
@@ -1368,9 +1374,10 @@ function buildHelpMessage() {
   return [
     '**Commands**',
     '`/help` - Show descriptions of bot commands and their options.',
-    '`/info` - Show current status of a selected KF2 server (current map, xp, players etc).',
+    '`/mapinfo` - Show current status of a selected KF2 server (current map, xp, players etc).',
     '`/overdrives` - Show overdrives information for a target player.',
     '`/perk` - Show perk levels for a target player.',
+    '`/playerinfo` - Show VIP status, perk levels, overdrives, and ranks for a target player.',
     '`/rank` - Show rank information for a target player (rank for each server difficulty).',
     '`/rankings` - Show server rankings for a selected difficulty (first 10 players).',
     '`/vipinfo` - Show VIP status for a target player.',
@@ -1378,8 +1385,8 @@ function buildHelpMessage() {
     '`/example` - Preview formatted output from a response payload without using a KF2 server. Not available for public use (devs only).',
     '',
     '**Shared Options**',
-    '`target` - Nickname, SteamID64, or Steam profile link. Used by `/perk`, `/vipinfo`, `/overdrives`, and `/rank`.',
-    '`difficulty` - Shows currently online KF2 servers. Used by `/info` and `/rankings`.',
+    '`target` - Nickname, SteamID64, or Steam profile link. Used by `/playerinfo`, `/perk`, `/vipinfo`, `/overdrives`, and `/rank`.',
+    '`difficulty` - Shows currently online KF2 servers. Used by `/mapinfo` and `/rankings`.',
     '`hidden` - If true, only you will see the response. By default is false. Available for every command.',
     '',
     '`raw` - Post the raw KF2 response without formatting. Not available for public use (devs only).',
@@ -1414,9 +1421,12 @@ function ensureExampleAccess(interaction) {
 const commandDefinitions = [
   addRawOption(addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
-      .setName('info')
+      .setName('mapinfo')
       .setDescription('Send a server info request to the matching KF2 server'),
   ))),
+  addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
+    .setName('playerinfo')
+    .setDescription('Show VIP, perk, overdrive, and rank information for a player')))),
   addRawOption(addHiddenOption(
     addTargetOption(new SlashCommandBuilder()
       .setName('perk')
@@ -1448,7 +1458,8 @@ const commandDefinitions = [
           .setDescription('Command type to mimic when formatting the response')
           .setRequired(true)
           .addChoices(
-            { name: 'info', value: 'info' },
+            { name: 'mapinfo', value: 'mapinfo' },
+            { name: 'playerinfo', value: 'playerinfo' },
             { name: 'perk', value: 'perk' },
             { name: 'vipinfo', value: 'vipinfo' },
             { name: 'overdrives', value: 'overdrives' },
@@ -1469,7 +1480,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('difficulty')
-          .setDescription('Difficulty to mimic for commands like /rank, /info, or vote')
+          .setDescription('Difficulty to mimic for commands like /rank, /mapinfo, or vote')
           .setRequired(false)
           .addChoices(
             { name: 'Normal', value: 'normal' },
@@ -3647,7 +3658,7 @@ async function buildRelayRequest(interaction) {
   const hidden = interaction.options.getBoolean('hidden') || false;
   const raw = resolveRawOption(interaction);
 
-  if (commandName === 'info') {
+  if (commandName === 'mapinfo') {
     const difficulty = interaction.options.getString('difficulty', true);
 
     if (!ensureValidDifficulty(difficulty)) {
@@ -3658,6 +3669,28 @@ async function buildRelayRequest(interaction) {
       commandName,
       difficulty,
       payload: '/dsrequest info',
+      hidden,
+      raw,
+    };
+  }
+
+  if (commandName === 'playerinfo') {
+    const relay = getDefaultRelay();
+
+    if (!relay) {
+      throw new Error('No active difficulties are available right now.');
+    }
+
+    const target = await steamService.resolvePlayerTarget(interaction.options.getString('target', true));
+
+    return {
+      commandName,
+      difficulty: relay.difficulty,
+      requestedTarget: target.display,
+      payloads: PLAYER_INFO_COMMANDS.map(({ commandName: playerCommandName }) => ({
+        commandName: playerCommandName,
+        payload: buildPlayerTargetPayload(playerCommandName, target),
+      })),
       hidden,
       raw,
     };
@@ -4062,7 +4095,10 @@ function formatOverdrivesResponse(request, responsePayload) {
   const lines = entries.map((entry) => formatRow(`${entry.emoji} ${entry.label}`, entry.current, entry.max));
 
   lines.unshift(titleLine);
-  lines.push('', formatRow('🚩 Total', total.current, total.max));
+  if (!request.compactOverdrives) {
+    lines.push('');
+  }
+  lines.push(formatRow('🚩 Total', total.current, total.max));
 
   return lines
     .map((line) => (line ? `\`${line}\`` : ''))
@@ -4099,7 +4135,7 @@ function formatSignedPercent(value) {
 }
 
 function formatInfoResponse(interaction, request, responsePayload) {
-  if (request.commandName !== 'info') {
+  if (request.commandName !== 'mapinfo') {
     return responsePayload;
   }
 
@@ -4342,7 +4378,7 @@ function formatResponseTargetDisplay(target) {
 }
 
 function prependRequestedTargetHeader(request, responseText) {
-  if (!request.requestedTarget) {
+  if (!request.requestedTarget || request.suppressRequestedTargetHeader) {
     return responseText;
   }
 
@@ -4382,7 +4418,7 @@ async function formatResponse(interaction, request, responsePayload) {
 
   if (effectiveRequest.commandName === 'perk') {
     formattedResponse = formatPerkResponse(interaction, effectiveRequest, responsePayload);
-  } else if (effectiveRequest.commandName === 'info') {
+  } else if (effectiveRequest.commandName === 'mapinfo') {
     formattedResponse = formatInfoResponse(interaction, effectiveRequest, responsePayload);
   } else if (effectiveRequest.commandName === 'vipinfo') {
     formattedResponse = formatVipInfoResponse(effectiveRequest, responsePayload);
@@ -4399,6 +4435,32 @@ async function formatResponse(interaction, request, responsePayload) {
   return prependRequestedTargetHeader(effectiveRequest, formattedResponse);
 }
 
+async function formatPlayerInfoResponses(interaction, request, responses) {
+  const sections = [];
+
+  for (const definition of PLAYER_INFO_COMMANDS) {
+    const response = responses.find((item) => item.commandName === definition.commandName);
+    if (!response) {
+      continue;
+    }
+
+    const responseText = await formatResponse(interaction, {
+      ...request,
+      commandName: definition.commandName,
+      suppressRequestedTargetHeader: true,
+      compactOverdrives: definition.commandName === 'overdrives',
+    }, response.responsePayload);
+
+    sections.push(`**${definition.title}**\n${responseText}`);
+  }
+
+  const targetHeader = request.requestedTarget
+    ? `Info about ${request.requestedTarget}`
+    : 'Player info';
+
+  return `${targetHeader}\n\n${sections.join('\n\n')}`;
+}
+
 function getInteractionUserMention(interaction) {
   return interaction.user?.id ? `<@${interaction.user.id}>` : '@unknown-user';
 }
@@ -4413,6 +4475,28 @@ async function postResponse(interaction, request, responsePayload, successMessag
     interaction,
     request,
     await formatResponse(interaction, request, responsePayload),
+  );
+
+  if (request.hidden) {
+    await editDiscordReply(interaction, {
+      content: formattedResponse,
+    });
+    return;
+  }
+
+  await sendDiscordMessage(interaction.channel, {
+    content: formattedResponse,
+  });
+  await editDiscordReply(interaction, {
+    content: successMessage,
+  });
+}
+
+async function postPlayerInfoResponse(interaction, request, responses, successMessage) {
+  const formattedResponse = wrapFormattedResponse(
+    interaction,
+    request,
+    await formatPlayerInfoResponses(interaction, request, responses),
   );
 
   if (request.hidden) {
@@ -4461,6 +4545,25 @@ async function processRelayQueue(difficulty) {
           await editDiscordReply(job.interaction, {
             content: `Your request for "${difficulty}" is now being processed...`,
           });
+        }
+
+        if (job.request.commandName === 'playerinfo') {
+          const responses = [];
+
+          for (const playerInfoRequest of job.request.payloads) {
+            responses.push({
+              commandName: playerInfoRequest.commandName,
+              responsePayload: await sendPayloadToRelay(relay, playerInfoRequest.payload),
+            });
+          }
+
+          await postPlayerInfoResponse(
+            job.interaction,
+            job.request,
+            responses,
+            `Sent player info requests to KF2 server "${difficulty}" and posted the response.`,
+          );
+          continue;
         }
 
         const responsePayload = await sendPayloadToRelay(relay, job.request.payload);
@@ -4619,6 +4722,17 @@ async function buildExampleRequest(interaction) {
     };
   }
 
+  if (commandName === 'playerinfo') {
+    const parseResult = getRelayJsonParseResult(responsePayload);
+    if (parseResult.error || !parseResult.payload || typeof parseResult.payload !== 'object') {
+      throw new Error(buildExampleJsonValidationError(
+        'playerinfo',
+        responsePayload,
+        'JSON containing vip, perks, overdrives, and ranks',
+      ));
+    }
+  }
+
   const resolvedTarget = targetInput
     ? await steamService.resolvePlayerTarget(targetInput)
     : null;
@@ -4653,6 +4767,19 @@ async function handleExampleCommand(interaction, request) {
 
   if (request.commandName === 'month-ranking-rewards') {
     await handleMonthlyRankingRewardsExamplePayload(interaction, request);
+    return;
+  }
+
+  if (request.commandName === 'playerinfo') {
+    await postPlayerInfoResponse(
+      interaction,
+      request,
+      PLAYER_INFO_COMMANDS.map(({ commandName }) => ({
+        commandName,
+        responsePayload: request.responsePayload,
+      })),
+      'Posted example response for "/playerinfo".',
+    );
     return;
   }
 
