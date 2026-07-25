@@ -19,13 +19,24 @@ const {
   createUnknownCountryResponse,
   isCountryByIpRequest,
 } = require('./country-service');
+const {
+  configureLogging,
+  logCountryByIpPayload,
+  logError,
+  logExampleResponseBody,
+  logInfo,
+  logKf2ConnectionInfo,
+  logKf2ConnectionWarn,
+  logReceivedKf2Body,
+  logVoteInfo,
+  logVoteWarn,
+  logWarn,
+} = require('./logs');
 const { SteamService } = require('./steam-service');
 
 const ENV_FILE_PATH = path.resolve(__dirname, '.env');
 const USER_TOKENS_FILE_PATH = path.resolve(__dirname, 'user_tokens.json');
 const STEAM_USERS_FILE_PATH = path.resolve(__dirname, 'steam_users.json');
-const LOGS_DIR_PATH = path.resolve(__dirname, 'logs');
-const LATEST_LOG_FILE_PATH = path.join(LOGS_DIR_PATH, 'latest.log');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -38,6 +49,7 @@ const MILLISECONDS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const MONTHLY_RANKING_REWARD_WAIT_SECONDS = 10;
 const initialRuntimeConfig = loadRuntimeConfig(process.env);
+configureLogging(initialRuntimeConfig);
 let CDA_AVATAR_URL = initialRuntimeConfig.cdaAvatarUrl;
 let KF2_RECONNECT_DELAY_MS = initialRuntimeConfig.kf2ReconnectDelayMs;
 let KF2_CONNECT_TIMEOUT_MS = initialRuntimeConfig.kf2ConnectTimeoutMs;
@@ -49,10 +61,6 @@ let KF2_VOTE_TIMEOUT_MS = initialRuntimeConfig.kf2VoteTimeoutMs;
 let KF2_KICK_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2KickVotePassPercent;
 let KF2_PAUSE_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseVotePassPercent;
 let KF2_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2SkipVotePassPercent;
-let TOGGLE_VOTE_LOGS = initialRuntimeConfig.toggleVoteLogs;
-let TOGGLE_KF2_RECEIVE_BODY_LOGS = initialRuntimeConfig.toggleKf2ReceiveBodyLogs;
-let TOGGLE_KF2_CONNECTION_LOGS = initialRuntimeConfig.toggleKf2ConnectionLogs;
-let TOGGLE_COUNTRY_BY_IP_LOGS = initialRuntimeConfig.toggleCountryByIpLogs;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let DISCORD_WEBHOOK_RETRY_INTERVAL_MS = initialRuntimeConfig.discordWebhookRetryIntervalMs;
 let DISCORD_RETRY_QUEUE_MAX_AGE_MS = initialRuntimeConfig.discordRetryQueueMaxAgeMs;
@@ -63,184 +71,16 @@ let COMMAND_TOKEN_RESET_SECONDS = initialRuntimeConfig.commandTokenResetSeconds;
 let COMMAND_TOKEN_RESET_ANCHOR = initialRuntimeConfig.commandTokenResetAnchor;
 let COMMAND_COOLDOWN_ROLE_MODE = initialRuntimeConfig.commandCooldownRoleMode;
 let COMMAND_COOLDOWN_ROLE_IDS = initialRuntimeConfig.commandCooldownRoleIds;
-let LOG_FILE_RETENTION_DAYS = initialRuntimeConfig.logFileRetentionDays;
-let fileLoggingInitialized = false;
-let fileLogRunSeparatorWritten = false;
-let lastLogCleanupDate = '';
-
-function formatLogTimestamp(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-
-  return `${year}.${month}.${day} ${hours}:${minutes}:${seconds}`;
-}
-
-function formatLogFileDate(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
-}
-
-function parseLogFileDate(fileName) {
-  const match = String(fileName || '').match(/^(\d{4})-(\d{2})-(\d{2})\.log$/);
-  if (!match) {
-    return null;
-  }
-
-  const year = Number.parseInt(match[1], 10);
-  const monthIndex = Number.parseInt(match[2], 10) - 1;
-  const day = Number.parseInt(match[3], 10);
-  const date = new Date(year, monthIndex, day);
-
-  if (
-    date.getFullYear() !== year
-    || date.getMonth() !== monthIndex
-    || date.getDate() !== day
-  ) {
-    return null;
-  }
-
-  return date;
-}
-
-function ensureLogDirectory() {
-  fs.mkdirSync(LOGS_DIR_PATH, { recursive: true });
-}
-
-function cleanupOldLogFiles(now = new Date()) {
-  if (LOG_FILE_RETENTION_DAYS <= 0) {
-    return;
-  }
-
-  const todayKey = formatLogFileDate(now);
-  if (lastLogCleanupDate === todayKey) {
-    return;
-  }
-
-  ensureLogDirectory();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const cutoff = new Date(today);
-  cutoff.setDate(cutoff.getDate() - (LOG_FILE_RETENTION_DAYS - 1));
-
-  for (const entry of fs.readdirSync(LOGS_DIR_PATH, { withFileTypes: true })) {
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    const logDate = parseLogFileDate(entry.name);
-    if (logDate && logDate < cutoff) {
-      fs.unlinkSync(path.join(LOGS_DIR_PATH, entry.name));
-    }
-  }
-
-  lastLogCleanupDate = todayKey;
-}
-
-function initializeFileLogging() {
-  if (LOG_FILE_RETENTION_DAYS <= 0) {
-    fileLoggingInitialized = false;
-    fileLogRunSeparatorWritten = false;
-    lastLogCleanupDate = '';
-    return;
-  }
-
-  ensureLogDirectory();
-  fs.writeFileSync(LATEST_LOG_FILE_PATH, '', 'utf8');
-  fileLoggingInitialized = true;
-  fileLogRunSeparatorWritten = false;
-  cleanupOldLogFiles();
-}
-
-function writeLogToFiles(line, now = new Date()) {
-  if (LOG_FILE_RETENTION_DAYS <= 0) {
-    return;
-  }
-
-  try {
-    if (!fileLoggingInitialized) {
-      initializeFileLogging();
-    }
-
-    cleanupOldLogFiles(now);
-    const dailyLogFilePath = path.join(LOGS_DIR_PATH, `${formatLogFileDate(now)}.log`);
-    const logLine = `${line}\n`;
-    const dailyLogLine = fileLogRunSeparatorWritten ? logLine : `\n${logLine}`;
-    fs.appendFileSync(dailyLogFilePath, dailyLogLine, 'utf8');
-    fs.appendFileSync(LATEST_LOG_FILE_PATH, logLine, 'utf8');
-    fileLogRunSeparatorWritten = true;
-  } catch (error) {
-    console.error(`[${formatLogTimestamp()}] Failed to write log file: ${error.message || error}`);
-  }
-}
-
-function logWithTimestamp(level, message) {
-  const now = new Date();
-  const line = `[${formatLogTimestamp(now)}] ${message}`;
-  console[level](line);
-  writeLogToFiles(line, now);
-}
-
-function logInfo(message) {
-  logWithTimestamp('log', message);
-}
-
-function logWarn(message) {
-  logWithTimestamp('warn', message);
-}
-
-function logError(message) {
-  logWithTimestamp('error', message);
-}
 
 const steamService = new SteamService({
   apiKey: STEAM_API_KEY,
   cacheFilePath: STEAM_USERS_FILE_PATH,
   retentionDays: initialRuntimeConfig.steamUserCacheRetentionDays,
-  logFetches: initialRuntimeConfig.toggleSteamFetchLogs,
-  logCacheUsage: initialRuntimeConfig.toggleSteamCacheLogs,
-  logInfo,
-  logWarn,
 });
 
 const countryService = new CountryService({
   token: IPINFO_TOKEN,
 });
-
-function logInfoConfig(message) {
-  if (TOGGLE_VOTE_LOGS) {
-    logInfo(message);
-  }
-}
-
-function logWarnConfig(message) {
-  if (TOGGLE_VOTE_LOGS) {
-    logWarn(message);
-  }
-}
-
-function logErrorConfig(message) {
-  if (TOGGLE_VOTE_LOGS) {
-    logError(message);
-  }
-}
-
-function logKf2ConnectionInfo(message) {
-  if (TOGGLE_KF2_CONNECTION_LOGS) {
-    logInfo(message);
-  }
-}
-
-function logKf2ConnectionWarn(message) {
-  if (TOGGLE_KF2_CONNECTION_LOGS) {
-    logWarn(message);
-  }
-}
 
 function isKf2JsonLikePayload(payload) {
   const payloadText = String(payload || '').trim();
@@ -386,30 +226,6 @@ function logInvalidKf2Json(config, source, payload, reason, error = null) {
   );
 }
 
-function logReceivedKf2Body(config, payload) {
-  if (!TOGGLE_KF2_RECEIVE_BODY_LOGS) {
-    return;
-  }
-
-  logInfo(`Received KF2 payload from "${config.name}":\n${String(payload || '').trim()}`);
-}
-
-function logExampleResponseBody(commandName, payload) {
-  if (!TOGGLE_KF2_RECEIVE_BODY_LOGS) {
-    return;
-  }
-
-  logInfo(`Received /example ${commandName} response payload:\n${String(payload || '').trim()}`);
-}
-
-function logCountryByIpPayload(direction, source, payload) {
-  if (!TOGGLE_COUNTRY_BY_IP_LOGS) {
-    return;
-  }
-
-  logInfo(`country_by_ip ${direction} (${source}):\n${JSON.stringify(payload)}`);
-}
-
 function getDiscordTextWidth(value) {
   return stringWidth(String(value).normalize('NFKC'));
 }
@@ -423,8 +239,6 @@ function padEndByDiscordTextWidth(value, targetWidth) {
   const padding = Math.max(0, targetWidth - getDiscordTextWidth(text));
   return text + ' '.repeat(padding);
 }
-
-initializeFileLogging();
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   logError('Missing DISCORD_TOKEN, CLIENT_ID, or GUILD_ID in .env');
@@ -743,6 +557,7 @@ function loadRuntimeConfig(env = process.env) {
     toggleSteamFetchLogs: parseToggle(env.TOGGLE_STEAM_FETCH_LOGS, false),
     toggleSteamCacheLogs: parseToggle(env.TOGGLE_STEAM_CACHE_LOGS, false),
     toggleCountryByIpLogs: parseToggle(env.TOGGLE_COUNTRY_BY_IP_LOGS, false),
+    toggleAllFileLogs: parseToggle(env.TOGGLE_ALL_FILE_LOGS, false),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
     discordRetryQueueMaxAgeMs: parseMinutesToMilliseconds(env.DISCORD_RETRY_QUEUE_MAX_AGE_MINUTES, 60),
@@ -759,8 +574,6 @@ function loadRuntimeConfig(env = process.env) {
 }
 
 function applyRuntimeConfig(config) {
-  const previousLogFileRetentionDays = LOG_FILE_RETENTION_DAYS;
-
   CDA_AVATAR_URL = config.cdaAvatarUrl;
   KF2_RECONNECT_DELAY_MS = config.kf2ReconnectDelayMs;
   KF2_CONNECT_TIMEOUT_MS = config.kf2ConnectTimeoutMs;
@@ -772,14 +585,7 @@ function applyRuntimeConfig(config) {
   KF2_KICK_VOTE_PASS_PERCENT = config.kf2KickVotePassPercent;
   KF2_PAUSE_VOTE_PASS_PERCENT = config.kf2PauseVotePassPercent;
   KF2_SKIP_VOTE_PASS_PERCENT = config.kf2SkipVotePassPercent;
-  TOGGLE_VOTE_LOGS = config.toggleVoteLogs;
-  TOGGLE_KF2_RECEIVE_BODY_LOGS = config.toggleKf2ReceiveBodyLogs;
-  TOGGLE_KF2_CONNECTION_LOGS = config.toggleKf2ConnectionLogs;
-  TOGGLE_COUNTRY_BY_IP_LOGS = config.toggleCountryByIpLogs;
-  steamService.setLoggingOptions({
-    logFetches: config.toggleSteamFetchLogs,
-    logCacheUsage: config.toggleSteamCacheLogs,
-  });
+  configureLogging(config);
   DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = config.discordWebhookRateLimitRetryLimit;
   DISCORD_WEBHOOK_RETRY_INTERVAL_MS = config.discordWebhookRetryIntervalMs;
   DISCORD_RETRY_QUEUE_MAX_AGE_MS = config.discordRetryQueueMaxAgeMs;
@@ -790,18 +596,7 @@ function applyRuntimeConfig(config) {
   COMMAND_TOKEN_RESET_ANCHOR = config.commandTokenResetAnchor;
   COMMAND_COOLDOWN_ROLE_MODE = config.commandCooldownRoleMode;
   COMMAND_COOLDOWN_ROLE_IDS = config.commandCooldownRoleIds;
-  LOG_FILE_RETENTION_DAYS = config.logFileRetentionDays;
   steamService.setRetentionDays(config.steamUserCacheRetentionDays);
-
-  if (LOG_FILE_RETENTION_DAYS <= 0) {
-    fileLoggingInitialized = false;
-    fileLogRunSeparatorWritten = false;
-    lastLogCleanupDate = '';
-  } else if (previousLogFileRetentionDays <= 0 || !fileLoggingInitialized) {
-    initializeFileLogging();
-  } else {
-    cleanupOldLogFiles();
-  }
 
   pruneCommandTokenState();
   saveCommandTokenState();
@@ -2117,7 +1912,7 @@ async function sendWebhookMessageNow(webhookUrl, payload) {
     const responseBody = await response.text().catch(() => '');
     if (response.status === 429 && attempt < DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT) {
       const retryMs = getDiscordRateLimitRetryMs(response, responseBody);
-      logWarnConfig(`Discord webhook rate limited; retrying in ${retryMs}ms.`);
+      logVoteWarn(`Discord webhook rate limited; retrying in ${retryMs}ms.`);
       await wait(retryMs);
       continue;
     }
@@ -2502,7 +2297,7 @@ function queueVoteMessageEdit(state) {
         `vote "${state.difficulty}"`,
       ))))
     .catch((error) => {
-      logWarnConfig(`Failed to edit vote message for "${state.difficulty}": ${error.message || error}`);
+      logVoteWarn(`Failed to edit vote message for "${state.difficulty}": ${error.message || error}`);
     });
 }
 
@@ -2710,7 +2505,7 @@ async function startVoteState(config, payload) {
 
   state.timeout = setTimeout(() => {
     clearVoteState(difficulty);
-    logInfoConfig(`Cleared timed-out vote state for "${difficulty}".`);
+    logVoteInfo(`Cleared timed-out vote state for "${difficulty}".`);
   }, KF2_VOTE_TIMEOUT_MS);
 
   activeVotes.set(difficulty, state);
@@ -2720,7 +2515,7 @@ async function startVoteState(config, payload) {
     const channelConfigName = payload.subtype === 'kick'
       ? `KF2_SERVER_${config.index}_KICK_VOTE_DISCORD_CHANNEL_IDS or KF2_KICK_VOTE_DISCORD_CHANNEL_IDS`
       : `KF2_SERVER_${config.index}_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS or KF2_PAUSE_SKIP_VOTE_DISCORD_CHANNEL_IDS`;
-    logWarnConfig(`Cannot post vote message for "${config.name}"; set ${channelConfigName}.`);
+    logVoteWarn(`Cannot post vote message for "${config.name}"; set ${channelConfigName}.`);
     return;
   }
 
@@ -2734,7 +2529,7 @@ async function startVoteState(config, payload) {
           state.messages.push(message);
         }
       } catch (error) {
-        logWarnConfig(`Failed to post vote message for ${config.name} to channel ${channelId}: ${error.message || error}`);
+        logVoteWarn(`Failed to post vote message for ${config.name} to channel ${channelId}: ${error.message || error}`);
       }
     }
 
@@ -2742,7 +2537,7 @@ async function startVoteState(config, payload) {
       queueVoteMessageEdit(state);
     }
   } catch (error) {
-    logWarnConfig(`Failed to post vote message for ${config.name}: ${error.message || error}`);
+    logVoteWarn(`Failed to post vote message for ${config.name}: ${error.message || error}`);
   }
 }
 

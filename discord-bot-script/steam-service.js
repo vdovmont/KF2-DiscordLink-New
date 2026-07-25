@@ -1,4 +1,11 @@
 const fs = require('fs');
+const {
+  logInfo,
+  logSteamCache,
+  logSteamCacheWarn,
+  logSteamFetch,
+  logWarn,
+} = require('./logs');
 
 const DEFAULT_RETENTION_DAYS = 30;
 const MILLISECONDS_PER_SECOND = 1000;
@@ -44,19 +51,11 @@ class SteamService {
     apiKey = '',
     cacheFilePath,
     retentionDays = DEFAULT_RETENTION_DAYS,
-    logFetches = false,
-    logCacheUsage = false,
-    logInfo = () => {},
-    logWarn = () => {},
     now = () => new Date(),
   }) {
     this.activeApiKey = apiKey;
     this.cacheFilePath = cacheFilePath;
     this.retentionDays = retentionDays;
-    this.logFetches = logFetches;
-    this.logCacheUsage = logCacheUsage;
-    this.logInfo = logInfo;
-    this.logWarn = logWarn;
     this.now = now;
     this.users = new Map();
     this.pendingRefreshes = new Map();
@@ -77,29 +76,6 @@ class SteamService {
     this.cleanupExpiredUsersSafely();
   }
 
-  setLoggingOptions({ logFetches, logCacheUsage }) {
-    this.logFetches = logFetches;
-    this.logCacheUsage = logCacheUsage;
-  }
-
-  logFetch(message) {
-    if (this.logFetches) {
-      this.logInfo(message);
-    }
-  }
-
-  logCache(message) {
-    if (this.logCacheUsage) {
-      this.logInfo(message);
-    }
-  }
-
-  logCacheWarning(message) {
-    if (this.logCacheUsage) {
-      this.logWarn(message);
-    }
-  }
-
   normalizeSteamId(rawSteamId) {
     const value = String(rawSteamId || '').trim();
     if (!value) {
@@ -111,7 +87,7 @@ class SteamService {
         return BigInt(value).toString(10);
       }
     } catch (error) {
-      this.logWarn(`Could not normalize SteamID "${value}": ${error.message || error}`);
+      logWarn(`Could not normalize SteamID "${value}": ${error.message || error}`);
     }
 
     return value;
@@ -147,7 +123,7 @@ class SteamService {
         avatarUrl: player?.avatar || '',
       };
     } catch (error) {
-      this.logWarn(`Could not retrieve Steam information for ${fallbackUsername} (${steamId}): ${error.message || error}`);
+      logWarn(`Could not retrieve Steam information for ${fallbackUsername} (${steamId}): ${error.message || error}`);
       return { username: fallbackUsername, avatarUrl: '' };
     }
   }
@@ -181,7 +157,7 @@ class SteamService {
         const player = await this.ensureSteamIdExists(normalizedSteamId);
         displayName = this.formatProfileDisplay(normalizedSteamId, player);
       } catch (error) {
-        this.logWarn(`Could not resolve Steam profile ${normalizedSteamId}: ${error.message || error}`);
+        logWarn(`Could not resolve Steam profile ${normalizedSteamId}: ${error.message || error}`);
       }
     }
 
@@ -301,7 +277,7 @@ class SteamService {
       const response = await fetch(url);
       if (response.status === 401 || response.status === 403) {
         this.activeApiKey = '';
-        this.logWarn('STEAM_API_KEY is invalid; continuing with Steam lookups disabled.');
+        logWarn('STEAM_API_KEY is invalid; continuing with Steam lookups disabled.');
         return;
       }
 
@@ -309,9 +285,9 @@ class SteamService {
         throw new Error(`${response.status} ${response.statusText}`);
       }
 
-      this.logInfo('STEAM_API_KEY validated successfully.');
+      logInfo('STEAM_API_KEY validated successfully.');
     } catch (error) {
-      this.logWarn(`Could not validate STEAM_API_KEY: ${error.message || error}`);
+      logWarn(`Could not validate STEAM_API_KEY: ${error.message || error}`);
     }
   }
 
@@ -326,7 +302,7 @@ class SteamService {
       (user) => user.vanityName.toLowerCase() === normalizedVanityName,
     );
     if (cachedUser) {
-      this.logCache(`Using cached Steam vanity mapping "${vanityName}" -> ${cachedUser.steamId}.`);
+      logSteamCache(`Using cached Steam vanity mapping "${vanityName}" -> ${cachedUser.steamId}.`);
       const player = await this.ensureSteamIdExists(cachedUser.steamId);
       return {
         steamId: cachedUser.steamId,
@@ -350,7 +326,7 @@ class SteamService {
       throw new Error('Steam vanity profile links require STEAM_API_KEY to resolve.');
     }
 
-    this.logFetch(`Fetching SteamID for vanity name "${vanityName}" because no cached mapping exists.`);
+    logSteamFetch(`Fetching SteamID for vanity name "${vanityName}" because no cached mapping exists.`);
     const url = new URL('https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/');
     url.searchParams.set('key', this.activeApiKey);
     url.searchParams.set('vanityurl', vanityName);
@@ -358,7 +334,7 @@ class SteamService {
     const response = await fetch(url);
     if (response.status === 401 || response.status === 403) {
       this.activeApiKey = '';
-      this.logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
+      logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
       throw new Error('Steam vanity profile links require a valid STEAM_API_KEY to resolve.');
     }
 
@@ -374,7 +350,7 @@ class SteamService {
 
     const player = await this.ensureSteamIdExists(steamId);
     this.saveVanityMapping(steamId, vanityName);
-    this.logFetch(`Saved Steam vanity mapping "${vanityName}" -> ${steamId}.`);
+    logSteamFetch(`Saved Steam vanity mapping "${vanityName}" -> ${steamId}.`);
     return { steamId, steamApiChecked: Boolean(player), player };
   }
 
@@ -456,7 +432,7 @@ class SteamService {
     const response = await fetch(url);
     if (response.status === 401 || response.status === 403) {
       this.activeApiKey = '';
-      this.logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
+      logWarn('STEAM_API_KEY was rejected by Steam API; Steam lookups are disabled until restart.');
       return null;
     }
 
@@ -486,7 +462,7 @@ class SteamService {
       }
       this.saveCache();
     } catch (error) {
-      this.logWarn(`Failed to load ${this.cacheFilePath}; starting with an empty Steam user cache: ${error.message || error}`);
+      logWarn(`Failed to load ${this.cacheFilePath}; starting with an empty Steam user cache: ${error.message || error}`);
       this.users = new Map();
     }
   }
@@ -519,7 +495,7 @@ class SteamService {
     this.lastCleanupDate = todayKey;
     if (removedCount > 0) {
       this.saveCache();
-      this.logInfo(`Removed ${removedCount} expired Steam user cache ${removedCount === 1 ? 'entry' : 'entries'}.`);
+      logInfo(`Removed ${removedCount} expired Steam user cache ${removedCount === 1 ? 'entry' : 'entries'}.`);
     }
   }
 
@@ -527,7 +503,7 @@ class SteamService {
     try {
       this.cleanupExpiredUsers(now);
     } catch (error) {
-      this.logWarn(`Failed to clean ${this.cacheFilePath}: ${error.message || error}`);
+      logWarn(`Failed to clean ${this.cacheFilePath}: ${error.message || error}`);
     }
   }
 
@@ -563,13 +539,13 @@ class SteamService {
     if (
       isSameLocalDay(storedUser?.lastFetchedAt, now)
     ) {
-      this.logCache(`Using cached Steam user information for ${normalizedSteamId}; fetched today at ${storedUser.lastFetchedAt}.`);
+      logSteamCache(`Using cached Steam user information for ${normalizedSteamId}; fetched today at ${storedUser.lastFetchedAt}.`);
       return cachedUser;
     }
 
     if (!this.activeApiKey) {
       if (cachedUser) {
-        this.logCache(`Using cached Steam user information for ${normalizedSteamId} because Steam API is unavailable; last fetched at ${cachedUser.lastFetchedAt}.`);
+        logSteamCache(`Using cached Steam user information for ${normalizedSteamId} because Steam API is unavailable; last fetched at ${cachedUser.lastFetchedAt}.`);
       }
       return cachedUser;
     }
@@ -584,13 +560,13 @@ class SteamService {
     const fetchReason = cachedUser
       ? `cached information is stale (last fetched at ${cachedUser.lastFetchedAt})`
       : 'no cached information exists';
-    this.logFetch(`Fetching Steam user information for ${steamId} because ${fetchReason}.`);
+    logSteamFetch(`Fetching Steam user information for ${steamId} because ${fetchReason}.`);
 
     try {
       const player = await this.fetchPlayerSummaryFromApi(steamId);
       if (!player) {
         if (cachedUser) {
-          this.logCache(`Using cached Steam user information for ${steamId} because Steam returned no updated data.`);
+          logSteamCache(`Using cached Steam user information for ${steamId} because Steam returned no updated data.`);
         }
         return cachedUser;
       }
@@ -604,14 +580,14 @@ class SteamService {
       };
       this.users.set(steamId, refreshedUser);
       this.saveCache();
-      this.logFetch(`Saved refreshed Steam user information for ${steamId} (${refreshedUser.nickname || 'unknown nickname'}).`);
+      logSteamFetch(`Saved refreshed Steam user information for ${steamId} (${refreshedUser.nickname || 'unknown nickname'}).`);
       return refreshedUser;
     } catch (error) {
       if (!cachedUser) {
         throw error;
       }
 
-      this.logCacheWarning(`Could not refresh Steam user ${steamId}; using cached information: ${error.message || error}`);
+      logSteamCacheWarn(`Could not refresh Steam user ${steamId}; using cached information: ${error.message || error}`);
       return cachedUser;
     }
   }
