@@ -20,6 +20,11 @@ const {
   isCountryByIpRequest,
 } = require('./country-service');
 const {
+  STEAM_USERS_FILE_PATH,
+  USER_TOKENS_FILE_PATH,
+  initializeDataFiles,
+} = require('./data-files');
+const {
   configureLogging,
   logCountryByIpPayload,
   logError,
@@ -35,8 +40,6 @@ const {
 const { SteamService } = require('./steam-service');
 
 const ENV_FILE_PATH = path.resolve(__dirname, '.env');
-const USER_TOKENS_FILE_PATH = path.resolve(__dirname, 'user_tokens.json');
-const STEAM_USERS_FILE_PATH = path.resolve(__dirname, 'steam_users.json');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -50,6 +53,7 @@ const SECONDS_PER_MINUTE = 60;
 const MONTHLY_RANKING_REWARD_WAIT_SECONDS = 10;
 const initialRuntimeConfig = loadRuntimeConfig(process.env);
 configureLogging(initialRuntimeConfig);
+initializeDataFiles();
 let CDA_AVATAR_URL = initialRuntimeConfig.cdaAvatarUrl;
 let KF2_RECONNECT_DELAY_MS = initialRuntimeConfig.kf2ReconnectDelayMs;
 let KF2_CONNECT_TIMEOUT_MS = initialRuntimeConfig.kf2ConnectTimeoutMs;

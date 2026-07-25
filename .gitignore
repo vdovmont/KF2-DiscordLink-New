@@ -1,9 +1,8 @@
 /.vscode/
-/notes/
 */node_modules/
 .env
 *.env
 !example.env
-discord-bot-script/user_tokens.json
-discord-bot-script/steam_users.json
+discord-bot-script/data/
 discord-bot-script/logs/
+discord-bot-script/notes/
