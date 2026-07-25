@@ -662,14 +662,16 @@ function logReloadedEnvChanges(previousSnapshot, nextSnapshot) {
     return;
   }
 
-  logInfo(`Reloaded runtime config from ${ENV_FILE_PATH}; changed settings:`);
+  const lines = [`Reloaded runtime config from ${ENV_FILE_PATH}; changed settings:`];
 
   for (const key of changedKeys) {
     const startupOnlyNote = isStartupOnlyEnvKey(key) ? ' (restart required; not applied)' : '';
-    logInfo(
+    lines.push(
       `  ${key}${startupOnlyNote}: ${formatEnvValueForLog(key, previousSnapshot?.[key])} -> ${formatEnvValueForLog(key, nextSnapshot?.[key])}`,
     );
   }
+
+  logInfo(lines.join('\n'));
 }
 
 function readEnvSnapshotFromFile() {
