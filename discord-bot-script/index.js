@@ -51,6 +51,7 @@ let KF2_PAUSE_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2PauseVotePassPercent;
 let KF2_SKIP_VOTE_PASS_PERCENT = initialRuntimeConfig.kf2SkipVotePassPercent;
 let TOGGLE_VOTE_LOGS = initialRuntimeConfig.toggleVoteLogs;
 let TOGGLE_KF2_RECEIVE_BODY_LOGS = initialRuntimeConfig.toggleKf2ReceiveBodyLogs;
+let TOGGLE_KF2_CONNECTION_LOGS = initialRuntimeConfig.toggleKf2ConnectionLogs;
 let TOGGLE_COUNTRY_BY_IP_LOGS = initialRuntimeConfig.toggleCountryByIpLogs;
 let DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT = initialRuntimeConfig.discordWebhookRateLimitRetryLimit;
 let DISCORD_WEBHOOK_RETRY_INTERVAL_MS = initialRuntimeConfig.discordWebhookRetryIntervalMs;
@@ -226,6 +227,18 @@ function logWarnConfig(message) {
 function logErrorConfig(message) {
   if (TOGGLE_VOTE_LOGS) {
     logError(message);
+  }
+}
+
+function logKf2ConnectionInfo(message) {
+  if (TOGGLE_KF2_CONNECTION_LOGS) {
+    logInfo(message);
+  }
+}
+
+function logKf2ConnectionWarn(message) {
+  if (TOGGLE_KF2_CONNECTION_LOGS) {
+    logWarn(message);
   }
 }
 
@@ -726,6 +739,7 @@ function loadRuntimeConfig(env = process.env) {
       env.TOGGLE_KF2_RECEIVE_BODY_LOGS,
       parseToggle(env.TOGGLE_FULL_JSON_BODY_LOGS, false),
     ),
+    toggleKf2ConnectionLogs: parseToggle(env.TOGGLE_KF2_CONNECTION_LOGS, false),
     toggleSteamFetchLogs: parseToggle(env.TOGGLE_STEAM_FETCH_LOGS, false),
     toggleSteamCacheLogs: parseToggle(env.TOGGLE_STEAM_CACHE_LOGS, false),
     toggleCountryByIpLogs: parseToggle(env.TOGGLE_COUNTRY_BY_IP_LOGS, false),
@@ -760,6 +774,7 @@ function applyRuntimeConfig(config) {
   KF2_SKIP_VOTE_PASS_PERCENT = config.kf2SkipVotePassPercent;
   TOGGLE_VOTE_LOGS = config.toggleVoteLogs;
   TOGGLE_KF2_RECEIVE_BODY_LOGS = config.toggleKf2ReceiveBodyLogs;
+  TOGGLE_KF2_CONNECTION_LOGS = config.toggleKf2ConnectionLogs;
   TOGGLE_COUNTRY_BY_IP_LOGS = config.toggleCountryByIpLogs;
   steamService.setLoggingOptions({
     logFetches: config.toggleSteamFetchLogs,
@@ -3329,7 +3344,7 @@ class Kf2Connection {
     socket.once('connect', () => {
       socket.setTimeout(0);
       this.connected = true;
-      logInfo(`Connected to KF2 server "${this.config.name}" at ${this.config.host}:${this.config.port}`);
+      logKf2ConnectionInfo(`Connected to KF2 server "${this.config.name}" at ${this.config.host}:${this.config.port}`);
       refreshActiveRelays();
     });
 
@@ -3342,7 +3357,7 @@ class Kf2Connection {
     });
 
     socket.on('error', (error) => {
-      logWarn(`KF2 server "${this.config.name}" socket error: ${error.message}`);
+      logKf2ConnectionWarn(`KF2 server "${this.config.name}" socket error: ${error.message}`);
     });
 
     socket.on('close', () => {
@@ -3354,7 +3369,7 @@ class Kf2Connection {
       refreshActiveRelays();
 
       if (wasConnected) {
-        logWarn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / MILLISECONDS_PER_SECOND)} seconds...`);
+        logKf2ConnectionWarn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / MILLISECONDS_PER_SECOND)} seconds...`);
       }
 
       this.scheduleReconnect();
