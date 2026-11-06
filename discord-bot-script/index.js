@@ -3893,18 +3893,17 @@ function formatVipInfoResponse(request, responsePayload) {
     return responsePayload;
   }
 
-  const target = formatResponseTargetDisplay(request.requestedTarget || 'User');
   const vipInfo = parseVipInfo(responsePayload);
   if (!vipInfo) {
     return null;
   }
 
   if (vipInfo.type.toLowerCase() === 'none' || vipInfo.daysLeft <= 0) {
-    return `${target} doesn't have VIP or his VIP has already expired`;
+    return "Player doesn't have VIP or his VIP has already expired";
   }
 
   const dayLabel = vipInfo.daysLeft === 1 ? 'day' : 'days';
-  return `${target} has ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
+  return `Player has ${vipInfo.daysLeft} ${dayLabel} of ${vipInfo.type} VIP left`;
 }
 
 function formatOverdrivesResponse(request, responsePayload) {
