@@ -736,6 +736,7 @@ function readServerConfig(index, env = process.env) {
     webhookUrl: (env[`${prefix}WEBHOOK_URL`] || '').trim(),
     forwardKf2ToDiscord: parseBoolean(env[`${prefix}FORWARD_KF2_TO_DISCORD`], true),
     forwardDiscordToKf2: parseBoolean(env[`${prefix}FORWARD_DISCORD_TO_KF2`], true),
+    encodeNicknames: parseBoolean(env[`${prefix}ENCODE_NICKNAMES`], false),
     commandsEnabled: parseBoolean(env[`${prefix}COMMANDS_ENABLED`], true),
   };
 }
@@ -1319,7 +1320,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('difficulty')
-          .setDescription(`Difficulty to mimic for /${COMMANDS.RANKS.commandName}, /${COMMANDS.SERVER_INFO.commandName}, webhook, or vote`)
+          .setDescription('Difficulty to mimic for serverinfo, ranks, webhook, or vote')
           .setRequired(false)
           .addChoices(
             { name: 'Normal', value: 'normal' },
@@ -1436,6 +1437,28 @@ function unicodeConvert(message) {
       return String.fromCharCode(codePoint);
     })
     .join('');
+}
+
+function unicodeEncode(value) {
+  return String(value || '')
+    .split('')
+    .map((character) => character.charCodeAt(0))
+    .join('/');
+}
+
+function formatNicknameForKf2(nickname, config) {
+  return config?.encodeNicknames ? unicodeEncode(nickname) : String(nickname || '');
+}
+
+function formatRequestPayloadForKf2(payload, config) {
+  if (!config?.encodeNicknames) {
+    return payload;
+  }
+
+  return String(payload).replace(
+    /^(\/dsrequest\s+\S+\s+nickname:)(.*)$/,
+    (match, prefix, nickname) => `${prefix}${unicodeEncode(nickname)}`,
+  );
 }
 
 function parseKf2ChatPayload(message, config) {
@@ -4669,7 +4692,9 @@ async function sendPayloadToRelay(relay, payload, options = {}) {
 
     try {
       return {
-        responsePayload: await nextRelay.connection.sendRequest(payload),
+        responsePayload: await nextRelay.connection.sendRequest(
+          formatRequestPayloadForKf2(payload, nextRelay.connection.config),
+        ),
         relay: nextRelay,
       };
     } catch (error) {
@@ -5410,10 +5435,10 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  const payload = `[Discord] ${getMessageDisplayName(message)}: ${relayContent}`;
-
   for (const connection of matchingConnections) {
     try {
+      const displayName = formatNicknameForKf2(getMessageDisplayName(message), connection.config);
+      const payload = `[Discord] ${displayName}: ${relayContent}`;
       connection.sendMessage(payload);
     } catch (error) {
       logWarn(`Failed to forward Discord message to "${connection.config.name}": ${error.message || error}`);
