@@ -3478,6 +3478,8 @@ async function buildTargetRelayRequest(interaction, commandName, hidden, raw) {
     commandName,
     difficulty: relay.difficulty,
     requestedTarget: target.display,
+    requestedTargetType: target.type,
+    requestedTargetValue: target.value,
     payload: buildPlayerTargetPayload(commandName, target),
     hidden,
     raw,
@@ -4239,7 +4241,7 @@ function getTargetDisplayNickname(targetDisplay) {
     : display;
 }
 
-function isRequestedPlayerTargetMatch(request, responseTarget, responseSteamId) {
+function isRequestedTargetMatch(request, responseTarget, responseSteamId) {
   if (request.requestedTargetType === 'steamid' && responseSteamId) {
     return steamService.normalizeSteamId(request.requestedTargetValue) === responseSteamId;
   }
@@ -4253,7 +4255,7 @@ function isRequestedPlayerTargetMatch(request, responseTarget, responseSteamId) 
     === normalizePlayerIdentity(getTargetDisplayNickname(responseTarget));
 }
 
-function formatRequestedPlayerTargetLine(request) {
+function formatRequestedTargetLine(request) {
   if (request.requestedTargetType === 'steamid') {
     const steamId = steamService.normalizeSteamId(request.requestedTargetValue);
     const requestedDisplay = String(request.requestedTarget || '').trim();
@@ -4271,7 +4273,15 @@ function prependRequestedTargetHeader(request, responseText) {
     return responseText;
   }
 
-  return `Information for ${formatResponseTargetDisplay(request.requestedTarget)}:\n${responseText}`;
+  const originalRequest = request.originalRequestedTarget
+    ? { ...request, requestedTarget: request.originalRequestedTarget }
+    : null;
+  const requestedTargetLine = originalRequest
+    && !isRequestedTargetMatch(originalRequest, request.requestedTarget, request.responseSteamId)
+    ? `${formatRequestedTargetLine(originalRequest)}\n`
+    : '';
+
+  return `Information for ${formatResponseTargetDisplay(request.requestedTarget)}:\n${requestedTargetLine}${responseText}`;
 }
 
 async function formatResponse(interaction, request, responsePayload) {
@@ -4282,11 +4292,23 @@ async function formatResponse(interaction, request, responsePayload) {
   }
 
   const parsedPayload = parseResult.payload;
-  const responseTarget = parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target')
+  const hasResponseTarget = parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target');
+  const normalizedResponseTarget = hasResponseTarget
+    ? steamService.normalizeSteamId(parsedPayload.target)
+    : '';
+  const responseSteamId = steamService.isValidSteamId64(normalizedResponseTarget)
+    ? normalizedResponseTarget
+    : '';
+  const responseTarget = hasResponseTarget
     ? await steamService.resolveResponseTargetDisplay(parsedPayload.target)
     : '';
   const effectiveRequest = responseTarget
-    ? { ...request, requestedTarget: responseTarget }
+    ? {
+      ...request,
+      originalRequestedTarget: request.requestedTarget,
+      requestedTarget: responseTarget,
+      responseSteamId,
+    }
     : request;
 
   if (request.raw) {
@@ -4359,8 +4381,8 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
   const targetDisplay = responseTarget || request.requestedTarget;
   const requestedTargetSuffix = responseTarget
     && request.requestedTarget
-    && !isRequestedPlayerTargetMatch(request, responseTarget, responseSteamId)
-    ? `\n${formatRequestedPlayerTargetLine(request)}`
+    && !isRequestedTargetMatch(request, responseTarget, responseSteamId)
+    ? `\n${formatRequestedTargetLine(request)}`
     : '';
   const targetHeader = targetDisplay
     ? `Info about ${targetDisplay}${requestedTargetSuffix}`
