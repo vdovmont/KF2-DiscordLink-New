@@ -4222,7 +4222,7 @@ function formatRankResponse(request, responsePayload) {
 
   if (projectedVipDays > 0) {
     const dayLabel = projectedVipDays === 1 ? 'day' : 'days';
-    lines.push(`Based on your current rank, at the end of the month you can recieve ${projectedVipDays} VIP ${dayLabel}!`);
+    lines.push(`Based on current rank, at the end of the month player can recieve ${projectedVipDays} VIP ${dayLabel}!`);
   }
 
   return lines.join('\n');
