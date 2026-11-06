@@ -41,7 +41,7 @@ const {
   logKf2ConnectionWarn,
   logLinksError,
   logReceivedKf2Body,
-  logSentKf2Request,
+  logSentKf2Body,
   logVoteInfo,
   logVoteWarn,
   logWarn,
@@ -3621,6 +3621,7 @@ class Kf2Connection {
     }
 
     this.socket.write(`${message}\n`);
+    logSentKf2Body(this.config, message);
   }
 
   sendRequest(payload) {
@@ -3644,7 +3645,6 @@ class Kf2Connection {
 
       try {
         this.sendMessage(payload);
-        logSentKf2Request(this.config, payload);
       } catch (error) {
         this.pendingRequest = null;
         clearTimeout(timeout);

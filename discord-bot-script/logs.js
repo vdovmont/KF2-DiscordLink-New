@@ -204,11 +204,11 @@ function logKf2ConnectionWarn(message) {
   logCategory('kf2Connection', 'warn', message);
 }
 
-function logSentKf2Request(config, payload) {
+function logSentKf2Body(config, payload) {
   logCategory(
     'kf2SendBody',
     'log',
-    `Sending KF2 request to "${config.name}":\n${String(payload || '').trim()}`,
+    `Sent KF2 message to "${config.name}":\n${String(payload || '').trim()}`,
   );
 }
 
@@ -299,7 +299,7 @@ module.exports = {
   logKf2ConnectionWarn,
   logLinksError,
   logReceivedKf2Body,
-  logSentKf2Request,
+  logSentKf2Body,
   logSteamCache,
   logSteamCacheWarn,
   logSteamFetch,
