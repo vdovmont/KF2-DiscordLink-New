@@ -2113,6 +2113,19 @@ function clearVoteState(difficulty) {
   activeVotes.delete(difficulty);
 }
 
+function endVoteForDisconnectedServer(config) {
+  const difficulty = getVoteStateKey(config);
+  const state = activeVotes.get(difficulty);
+  if (!state || state.serverConfig !== config) {
+    return;
+  }
+
+  state.terminationReason = 'Vote ended prematurely because the KF2 server went offline.';
+  queueVoteMessageEdit(state);
+  clearVoteState(difficulty);
+  logVoteInfo(`Ended active vote for "${config.name}" because the KF2 server went offline.`);
+}
+
 function formatVoteTimestamp(value) {
   const date = value instanceof Date ? value : new Date(value);
   const hours = String(date.getHours()).padStart(2, '0');
@@ -2292,7 +2305,9 @@ function formatVoteMessage(state) {
   if (lines.length > 0 && lines[lines.length - 1] !== '') {
     lines.push('');
   }
-  if (typeof state.result === 'boolean') {
+  if (state.terminationReason) {
+    lines.push(`${formatDiscordInlineCode('Result:')} ${state.terminationReason}`);
+  } else if (typeof state.result === 'boolean') {
     lines.push(`${formatDiscordInlineCode('Result:')} (${stats.positivePercent}%/${stats.requiredPercent}%) ${formatVoteBoolean(state.result)}`);
   } else {
     lines.push(`${formatDiscordInlineCode('Result:')} (${stats.positivePercent}%/${stats.requiredPercent}%)`);
@@ -2483,6 +2498,7 @@ async function startVoteState(config, payload) {
   const payloadWaveNumber = Number.parseInt(payload.waveNumber, 10);
   const state = {
     startedAt: new Date(),
+    serverConfig: config,
     difficulty,
     difficultyLabel: getDifficultyLabel(difficulty),
     waveNumber: Number.isInteger(payloadWaveNumber) && payloadWaveNumber > 0
@@ -2500,6 +2516,7 @@ async function startVoteState(config, payload) {
     joinedPlayerKeys: new Set(),
     votes: new Map(),
     result: null,
+    terminationReason: '',
     messages: [],
     timeout: null,
     editPromise: Promise.resolve(),
@@ -3183,6 +3200,7 @@ class Kf2Connection {
       refreshActiveRelays();
 
       if (wasConnected) {
+        endVoteForDisconnectedServer(this.config);
         logKf2ConnectionWarn(`Lost connection to KF2 server "${this.config.name}". Retrying in ${Math.round(KF2_RECONNECT_DELAY_MS / MILLISECONDS_PER_SECOND)} seconds...`);
       }
 
