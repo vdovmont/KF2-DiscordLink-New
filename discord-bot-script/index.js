@@ -263,17 +263,28 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 
-const KNOWN_COMMANDS = ['serverinfo', 'playerinfo', 'perks', 'vipinfo', 'overdrives', 'ranks', 'rankings', 'example', 'help'];
+const COMMANDS = Object.freeze({
+  SERVER_INFO: Object.freeze({ commandName: 'serverinfo', payloadName: 'info' }),
+  PLAYER_INFO: Object.freeze({ commandName: 'playerinfo', payloadName: null }),
+  PERKS: Object.freeze({ commandName: 'perks', payloadName: 'perk' }),
+  VIP_INFO: Object.freeze({ commandName: 'vipinfo', payloadName: 'vipinfo' }),
+  OVERDRIVES: Object.freeze({ commandName: 'overdrives', payloadName: 'overdrives' }),
+  RANKS: Object.freeze({ commandName: 'ranks', payloadName: 'rank' }),
+  RANKINGS: Object.freeze({ commandName: 'rankings', payloadName: 'rank' }),
+  EXAMPLE: Object.freeze({ commandName: 'example', payloadName: null }),
+  HELP: Object.freeze({ commandName: 'help', payloadName: null }),
+});
+const KNOWN_COMMANDS = Object.values(COMMANDS).map(({ commandName }) => commandName);
 const FORMAT_RESPONSE_ERROR_MESSAGE = 'Oh-oh: something went wrong with response from KF2 server. Please use "raw" option for detailed response.';
 const NO_DIFFICULTY_VALUE = '__no_active_difficulties__';
 const DISCORD_MESSAGE_MAX_LENGTH = 2000;
 const DISCORD_ZERO_WIDTH_SPACE = '\u200B';
 const MONTHLY_RANKING_REWARD_CHUNK_PREFIX = `${DISCORD_ZERO_WIDTH_SPACE}\n`;
 const PLAYER_INFO_COMMANDS = [
-  { commandName: 'perks', relayCommandName: 'perk', title: 'Perks' },
-  { commandName: 'overdrives', title: 'Overdrives' },
-  { commandName: 'vipinfo', title: 'VIP Info' },
-  { commandName: 'ranks', relayCommandName: 'rank', title: 'Ranks' },
+  { ...COMMANDS.PERKS, title: 'Perks' },
+  { ...COMMANDS.OVERDRIVES, title: 'Overdrives' },
+  { ...COMMANDS.VIP_INFO, title: 'VIP Info' },
+  { ...COMMANDS.RANKS, title: 'Ranks' },
 ];
 const DIFFICULTY_ORDER = ['normal', 'hard', 'suicidal', 'hoe', 'extreme'];
 const MONTHLY_RANKING_REWARD_SUBTYPES = [...DIFFICULTY_ORDER, 'rewards'];
@@ -1189,23 +1200,23 @@ function consumeCommandToken(interaction, requestedHidden) {
 function buildHelpMessage() {
   return [
     '**Commands**',
-    '`/help` - Show descriptions of bot commands and their options.',
-    '`/serverinfo` - Show current status of a selected KF2 server (current map, xp, players etc).',
-    '`/overdrives` - Show overdrives information for a target player.',
-    '`/perks` - Show perk levels for a target player.',
-    '`/playerinfo` - Show VIP status, perk levels, overdrives, and ranks for a target player.',
-    '`/ranks` - Show rank information for a target player (rank for each server difficulty).',
-    '`/rankings` - Show server rankings for a selected difficulty (first 10 players).',
-    '`/vipinfo` - Show VIP status for a target player.',
+    `${formatDiscordInlineCode(`/${COMMANDS.HELP.commandName}`)} - Show descriptions of bot commands and their options.`,
+    `${formatDiscordInlineCode(`/${COMMANDS.SERVER_INFO.commandName}`)} - Show current status of a selected KF2 server (current map, xp, players etc).`,
+    `${formatDiscordInlineCode(`/${COMMANDS.OVERDRIVES.commandName}`)} - Show overdrives information for a target player.`,
+    `${formatDiscordInlineCode(`/${COMMANDS.PERKS.commandName}`)} - Show perk levels for a target player.`,
+    `${formatDiscordInlineCode(`/${COMMANDS.PLAYER_INFO.commandName}`)} - Show VIP status, perk levels, overdrives, and ranks for a target player.`,
+    `${formatDiscordInlineCode(`/${COMMANDS.RANKS.commandName}`)} - Show rank information for a target player (rank for each server difficulty).`,
+    `${formatDiscordInlineCode(`/${COMMANDS.RANKINGS.commandName}`)} - Show server rankings for a selected difficulty (first 10 players).`,
+    `${formatDiscordInlineCode(`/${COMMANDS.VIP_INFO.commandName}`)} - Show VIP status for a target player.`,
     '',
-    '`/example` - Preview formatted output from a response payload without using a KF2 server. Not available for public use (devs only).',
+    `${formatDiscordInlineCode(`/${COMMANDS.EXAMPLE.commandName}`)} - Preview formatted output from a response payload without using a KF2 server. Not available for public use (devs only).`,
     '',
     '**Shared Options**',
-    '`target` - Nickname, SteamID64, or Steam profile link. Used by `/playerinfo`, `/perks`, `/vipinfo`, `/overdrives`, and `/ranks`.',
-    '`difficulty` - Shows currently online KF2 servers. Used by `/serverinfo` and `/rankings`.',
-    '`hidden` - If true, only you will see the response. By default is false. Available for every command.',
+    `${formatDiscordInlineCode('target')} - Nickname, SteamID64, or Steam profile link. Used by ${formatDiscordInlineCode(`/${COMMANDS.PLAYER_INFO.commandName}`)}, ${formatDiscordInlineCode(`/${COMMANDS.PERKS.commandName}`)}, ${formatDiscordInlineCode(`/${COMMANDS.VIP_INFO.commandName}`)}, ${formatDiscordInlineCode(`/${COMMANDS.OVERDRIVES.commandName}`)}, and ${formatDiscordInlineCode(`/${COMMANDS.RANKS.commandName}`)}.`,
+    `${formatDiscordInlineCode('difficulty')} - Shows currently online KF2 servers. Used by ${formatDiscordInlineCode(`/${COMMANDS.SERVER_INFO.commandName}`)} and ${formatDiscordInlineCode(`/${COMMANDS.RANKINGS.commandName}`)}.`,
+    `${formatDiscordInlineCode('hidden')} - If true, only you will see the response. By default is false. Available for every command.`,
     '',
-    '`raw` - Post the raw KF2 response without formatting. Not available for public use (devs only).',
+    `${formatDiscordInlineCode('raw')} - Post the raw KF2 response without formatting. Not available for public use (devs only).`,
   ].join('\n');
 }
 
@@ -1229,7 +1240,7 @@ function ensureExampleAccess(interaction) {
     return;
   }
 
-  const error = new Error('You are not allowed to use the /example command.');
+  const error = new Error(`You are not allowed to use the /${COMMANDS.EXAMPLE.commandName} command.`);
   error.suppressConsoleLog = true;
   throw error;
 }
@@ -1237,36 +1248,36 @@ function ensureExampleAccess(interaction) {
 const commandDefinitions = [
   addRawOption(addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
-      .setName('serverinfo')
+      .setName(COMMANDS.SERVER_INFO.commandName)
       .setDescription('Send a server info request to the matching KF2 server'),
   ))),
   addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
-    .setName('playerinfo')
+    .setName(COMMANDS.PLAYER_INFO.commandName)
     .setDescription('Show VIP, perk, overdrive, and rank information for a player')))),
   addRawOption(addHiddenOption(
     addTargetOption(new SlashCommandBuilder()
-      .setName('perks')
+      .setName(COMMANDS.PERKS.commandName)
       .setDescription('Send a perk request to the first connected KF2 server')),
   )),
   addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
-    .setName('vipinfo')
+    .setName(COMMANDS.VIP_INFO.commandName)
     .setDescription('Send a VIP info request to the first connected KF2 server')))),
   addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
-    .setName('overdrives')
+    .setName(COMMANDS.OVERDRIVES.commandName)
     .setDescription('Send an overdrives request to the first connected KF2 server')))),
   addRawOption(addHiddenOption(addTargetOption(
     new SlashCommandBuilder()
-      .setName('ranks')
+      .setName(COMMANDS.RANKS.commandName)
       .setDescription('Send a player rank request to the first connected KF2 server'),
   ))),
   addRawOption(addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
-      .setName('rankings')
+      .setName(COMMANDS.RANKINGS.commandName)
       .setDescription('Send a server rankings request to the matching KF2 server'),
   ))),
   addRawOption(addHiddenOption(
     new SlashCommandBuilder()
-      .setName('example')
+      .setName(COMMANDS.EXAMPLE.commandName)
       .setDescription('Preview a response payload without using a KF2 server')
       .addStringOption((option) =>
         option
@@ -1274,13 +1285,15 @@ const commandDefinitions = [
           .setDescription('Command type to mimic when formatting the response')
           .setRequired(true)
           .addChoices(
-            { name: 'serverinfo', value: 'serverinfo' },
-            { name: 'playerinfo', value: 'playerinfo' },
-            { name: 'perks', value: 'perks' },
-            { name: 'vipinfo', value: 'vipinfo' },
-            { name: 'overdrives', value: 'overdrives' },
-            { name: 'ranks', value: 'ranks' },
-            { name: 'rankings', value: 'rankings' },
+            ...[
+              COMMANDS.SERVER_INFO,
+              COMMANDS.PLAYER_INFO,
+              COMMANDS.PERKS,
+              COMMANDS.VIP_INFO,
+              COMMANDS.OVERDRIVES,
+              COMMANDS.RANKS,
+              COMMANDS.RANKINGS,
+            ].map(({ commandName }) => ({ name: commandName, value: commandName })),
             { name: 'country_by_ip', value: 'country_by_ip' },
             { name: 'month-ranking-rewards', value: 'month-ranking-rewards' },
             { name: 'target', value: 'target' },
@@ -1296,7 +1309,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('difficulty')
-          .setDescription('Difficulty to mimic for commands like /ranks, /serverinfo, or vote')
+          .setDescription(`Difficulty to mimic for /${COMMANDS.RANKS.commandName}, /${COMMANDS.SERVER_INFO.commandName}, or vote`)
           .setRequired(false)
           .addChoices(
             { name: 'Normal', value: 'normal' },
@@ -1314,7 +1327,7 @@ const commandDefinitions = [
       ),
   )),
   addHiddenOption(new SlashCommandBuilder()
-    .setName('help')
+    .setName(COMMANDS.HELP.commandName)
     .setDescription('Show descriptions of bot commands and their options')),
 ];
 
@@ -2982,8 +2995,8 @@ function createMonthlyRankingRewardExampleBatch(interaction, hidden) {
   const batch = {
     key,
     config: {
-      name: '/example',
-      difficulty: 'example',
+      name: `/${COMMANDS.EXAMPLE.commandName}`,
+      difficulty: COMMANDS.EXAMPLE.commandName,
     },
     channel: interaction.channel,
     hidden,
@@ -3011,7 +3024,7 @@ function getMonthlyRankingRewardExampleBatch(interaction, hidden) {
 async function notifyMonthlyRankingRewardExampleInteractions(batch, message) {
   await Promise.all(batch.interactions.map((interaction) =>
     editDiscordReply(interaction, { content: message }).catch((error) => {
-      logWarn(`Failed to update /example month-ranking-rewards reply: ${error.message || error}`);
+      logWarn(`Failed to update /${COMMANDS.EXAMPLE.commandName} month-ranking-rewards reply: ${error.message || error}`);
     })));
 }
 
@@ -3045,7 +3058,7 @@ async function postMonthlyRankingRewardExampleBatch(batch, chunks) {
       editDiscordReply(interaction, {
         content: 'Merged into the hidden monthly reward example batch.',
       }).catch((error) => {
-        logWarn(`Failed to update /example month-ranking-rewards reply: ${error.message || error}`);
+        logWarn(`Failed to update /${COMMANDS.EXAMPLE.commandName} month-ranking-rewards reply: ${error.message || error}`);
       })));
     return;
   }
@@ -3076,7 +3089,7 @@ async function finalizeMonthlyRankingRewardExampleBatch(key, reason) {
     const chunks = await splitMonthlyRankingRewardsMessage(buildMonthlyRankingRewardPayloadFromBatch(batch));
     await postMonthlyRankingRewardExampleBatch(batch, chunks);
   } catch (error) {
-    logWarn(`Failed to post merged /example monthly ranking rewards after ${reason}: ${error.message || error}`);
+    logWarn(`Failed to post merged /${COMMANDS.EXAMPLE.commandName} monthly ranking rewards after ${reason}: ${error.message || error}`);
     await notifyMonthlyRankingRewardExampleInteractions(
       batch,
       `Failed to post merged example response: ${error.message || error}`,
@@ -3087,7 +3100,7 @@ async function finalizeMonthlyRankingRewardExampleBatch(key, reason) {
 async function handleMonthlyRankingRewardsExamplePayload(interaction, request) {
   const payload = buildMonthlyRankingRewardPayloadFromSubtype(request.monthRankingRewardsPayload);
   if (!payload) {
-    throw new Error('Provide a valid subtype-based month-ranking-rewards JSON payload for /example.');
+    throw new Error(`Provide a valid subtype-based month-ranking-rewards JSON payload for /${COMMANDS.EXAMPLE.commandName}.`);
   }
 
   const explicitlyHidden = interaction.options.getBoolean('hidden') === true;
@@ -3095,7 +3108,7 @@ async function handleMonthlyRankingRewardsExamplePayload(interaction, request) {
   batch.interactions.push(interaction);
 
   if (!mergeMonthlyRankingRewardPayload(batch, request.monthRankingRewardsPayload)) {
-    throw new Error('Provide a valid subtype-based month-ranking-rewards JSON payload for /example.');
+    throw new Error(`Provide a valid subtype-based month-ranking-rewards JSON payload for /${COMMANDS.EXAMPLE.commandName}.`);
   }
   scheduleMonthlyRankingRewardExampleBatchTimeout(batch);
 
@@ -3413,8 +3426,8 @@ class Kf2Connection {
   }
 }
 
-function buildPlayerTargetPayload(commandName, target) {
-  return `/dsrequest ${commandName} ${target.type}:${target.value}`;
+function buildPlayerTargetPayload(payloadName, target) {
+  return `/dsrequest ${payloadName} ${target.type}:${target.value}`;
 }
 
 function suppressDiscordLinkEmbeds(text) {
@@ -3434,7 +3447,7 @@ function formatTargetResolutionExample(input, target) {
     `Source: ${target.source}`,
     `Value sent to KF2: ${target.type}:${target.value}`,
     `Display in responses: ${target.display}`,
-    `Example KF2 request: ${buildPlayerTargetPayload('perk', target)}`,
+    `Example KF2 request: ${buildPlayerTargetPayload(COMMANDS.PERKS.payloadName, target)}`,
     `Steam API validation: ${steamApiStatus}`,
   ].join('\n');
 }
@@ -3465,7 +3478,7 @@ async function formatResponseTargetResolutionExample(responsePayload) {
   ].join('\n');
 }
 
-async function buildTargetRelayRequest(interaction, commandName, hidden, raw) {
+async function buildTargetRelayRequest(interaction, command, hidden, raw) {
   const relay = getDefaultRelay();
 
   if (!relay) {
@@ -3473,19 +3486,13 @@ async function buildTargetRelayRequest(interaction, commandName, hidden, raw) {
   }
 
   const target = await steamService.resolvePlayerTarget(interaction.options.getString('target', true));
-  const relayCommandName = commandName === 'perks'
-    ? 'perk'
-    : commandName === 'ranks'
-      ? 'rank'
-      : commandName;
-
   return {
-    commandName,
+    commandName: command.commandName,
     difficulty: relay.difficulty,
     requestedTarget: target.display,
     requestedTargetType: target.type,
     requestedTargetValue: target.value,
-    payload: buildPlayerTargetPayload(relayCommandName, target),
+    payload: buildPlayerTargetPayload(command.payloadName, target),
     hidden,
     raw,
   };
@@ -3496,7 +3503,7 @@ async function buildRelayRequest(interaction) {
   const hidden = interaction.options.getBoolean('hidden') || false;
   const raw = resolveRawOption(interaction);
 
-  if (commandName === 'serverinfo') {
+  if (commandName === COMMANDS.SERVER_INFO.commandName) {
     const difficulty = interaction.options.getString('difficulty', true);
 
     if (!ensureValidDifficulty(difficulty)) {
@@ -3506,13 +3513,13 @@ async function buildRelayRequest(interaction) {
     return {
       commandName,
       difficulty,
-      payload: '/dsrequest info',
+      payload: `/dsrequest ${COMMANDS.SERVER_INFO.payloadName}`,
       hidden,
       raw,
     };
   }
 
-  if (commandName === 'playerinfo') {
+  if (commandName === COMMANDS.PLAYER_INFO.commandName) {
     const relay = getDefaultRelay();
 
     if (!relay) {
@@ -3527,32 +3534,32 @@ async function buildRelayRequest(interaction) {
       requestedTarget: target.display,
       requestedTargetType: target.type,
       requestedTargetValue: target.value,
-      payloads: PLAYER_INFO_COMMANDS.map(({ commandName: playerCommandName, relayCommandName = playerCommandName }) => ({
+      payloads: PLAYER_INFO_COMMANDS.map(({ commandName: playerCommandName, payloadName }) => ({
         commandName: playerCommandName,
-        payload: buildPlayerTargetPayload(relayCommandName, target),
+        payload: buildPlayerTargetPayload(payloadName, target),
       })),
       hidden,
       raw,
     };
   }
 
-  if (commandName === 'vipinfo') {
-    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
+  if (commandName === COMMANDS.VIP_INFO.commandName) {
+    return buildTargetRelayRequest(interaction, COMMANDS.VIP_INFO, hidden, raw);
   }
 
-  if (commandName === 'perks') {
-    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
+  if (commandName === COMMANDS.PERKS.commandName) {
+    return buildTargetRelayRequest(interaction, COMMANDS.PERKS, hidden, raw);
   }
 
-  if (commandName === 'overdrives') {
-    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
+  if (commandName === COMMANDS.OVERDRIVES.commandName) {
+    return buildTargetRelayRequest(interaction, COMMANDS.OVERDRIVES, hidden, raw);
   }
 
-  if (commandName === 'ranks') {
-    return buildTargetRelayRequest(interaction, commandName, hidden, raw);
+  if (commandName === COMMANDS.RANKS.commandName) {
+    return buildTargetRelayRequest(interaction, COMMANDS.RANKS, hidden, raw);
   }
 
-  if (commandName === 'rankings') {
+  if (commandName === COMMANDS.RANKINGS.commandName) {
     const selectedDifficulty = interaction.options.getString('difficulty', true);
     if (!ensureValidDifficulty(selectedDifficulty)) {
       throw new Error('Selected difficulty is not active right now.');
@@ -3561,7 +3568,7 @@ async function buildRelayRequest(interaction) {
     return {
       commandName,
       difficulty: selectedDifficulty,
-      payload: '/dsrequest rank',
+      payload: `/dsrequest ${COMMANDS.RANKINGS.payloadName}`,
       hidden,
       raw,
     };
@@ -3842,7 +3849,7 @@ function resolveGuildEmoji(interaction, emojiName) {
 }
 
 function formatPerkResponse(interaction, request, responsePayload) {
-  if (request.commandName !== 'perks') {
+  if (request.commandName !== COMMANDS.PERKS.commandName) {
     return responsePayload;
   }
 
@@ -3882,7 +3889,7 @@ function formatPerkResponse(interaction, request, responsePayload) {
 }
 
 function formatVipInfoResponse(request, responsePayload) {
-  if (request.commandName !== 'vipinfo') {
+  if (request.commandName !== COMMANDS.VIP_INFO.commandName) {
     return responsePayload;
   }
 
@@ -3901,7 +3908,7 @@ function formatVipInfoResponse(request, responsePayload) {
 }
 
 function formatOverdrivesResponse(request, responsePayload) {
-  if (request.commandName !== 'overdrives') {
+  if (request.commandName !== COMMANDS.OVERDRIVES.commandName) {
     return responsePayload;
   }
 
@@ -3975,7 +3982,7 @@ function formatSignedPercent(value) {
 }
 
 function formatInfoResponse(interaction, request, responsePayload) {
-  if (request.commandName !== 'serverinfo') {
+  if (request.commandName !== COMMANDS.SERVER_INFO.commandName) {
     return responsePayload;
   }
 
@@ -4138,7 +4145,8 @@ function formatInfoResponse(interaction, request, responsePayload) {
 }
 
 function formatRankResponse(request, responsePayload) {
-  if (request.commandName !== 'ranks' && request.commandName !== 'rankings') {
+  if (request.commandName !== COMMANDS.RANKS.commandName
+    && request.commandName !== COMMANDS.RANKINGS.commandName) {
     return responsePayload;
   }
 
@@ -4325,22 +4333,23 @@ async function formatResponse(interaction, request, responsePayload) {
   }
 
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
-    if (effectiveRequest.commandName === 'vipinfo') {
+    if (effectiveRequest.commandName === COMMANDS.VIP_INFO.commandName) {
       const target = formatResponseTargetDisplay(effectiveRequest.requestedTarget || 'User');
       return prependRequestedTargetHeader(effectiveRequest, `${target}: ${parsedPayload.error.trim()}`);
     }
     return prependRequestedTargetHeader(effectiveRequest, parsedPayload.error.trim());
   }
 
-  if (effectiveRequest.commandName === 'perks') {
+  if (effectiveRequest.commandName === COMMANDS.PERKS.commandName) {
     formattedResponse = formatPerkResponse(interaction, effectiveRequest, responsePayload);
-  } else if (effectiveRequest.commandName === 'serverinfo') {
+  } else if (effectiveRequest.commandName === COMMANDS.SERVER_INFO.commandName) {
     formattedResponse = formatInfoResponse(interaction, effectiveRequest, responsePayload);
-  } else if (effectiveRequest.commandName === 'vipinfo') {
+  } else if (effectiveRequest.commandName === COMMANDS.VIP_INFO.commandName) {
     formattedResponse = formatVipInfoResponse(effectiveRequest, responsePayload);
-  } else if (effectiveRequest.commandName === 'overdrives') {
+  } else if (effectiveRequest.commandName === COMMANDS.OVERDRIVES.commandName) {
     formattedResponse = formatOverdrivesResponse(effectiveRequest, responsePayload);
-  } else if (effectiveRequest.commandName === 'ranks' || effectiveRequest.commandName === 'rankings') {
+  } else if (effectiveRequest.commandName === COMMANDS.RANKS.commandName
+    || effectiveRequest.commandName === COMMANDS.RANKINGS.commandName) {
     formattedResponse = formatRankResponse(effectiveRequest, responsePayload);
   }
 
@@ -4377,7 +4386,7 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
       ...request,
       commandName: definition.commandName,
       suppressRequestedTargetHeader: true,
-      compactOverdrives: definition.commandName === 'overdrives',
+      compactOverdrives: definition.commandName === COMMANDS.OVERDRIVES.commandName,
     }, response.responsePayload);
 
     sections.push(`**${definition.title}**\n${responseText}`);
@@ -4484,7 +4493,7 @@ async function processRelayQueue(difficulty) {
           });
         }
 
-        if (job.request.commandName === 'playerinfo') {
+        if (job.request.commandName === COMMANDS.PLAYER_INFO.commandName) {
           const responses = [];
 
           for (const playerInfoRequest of job.request.payloads) {
@@ -4558,7 +4567,7 @@ function buildExampleVoteConfig(difficulty) {
   }
 
   return {
-    index: 'example',
+    index: COMMANDS.EXAMPLE.commandName,
     name: getDifficultyLabel(selectedDifficulty),
     difficulty: selectedDifficulty,
     kickVoteChannelIds: KF2_KICK_VOTE_DISCORD_CHANNEL_IDS,
@@ -4569,10 +4578,10 @@ function buildExampleVoteConfig(difficulty) {
 function buildExampleJsonValidationError(commandName, responsePayload, expectedPayload) {
   const parseResult = getRelayJsonParseResult(responsePayload);
   if (parseResult.error) {
-    return `Invalid JSON for /example ${commandName}: ${formatInvalidJsonDetails(responsePayload, parseResult.error)}`;
+    return `Invalid JSON for /${COMMANDS.EXAMPLE.commandName} ${commandName}: ${formatInvalidJsonDetails(responsePayload, parseResult.error)}`;
   }
 
-  return `Invalid payload for /example ${commandName}: expected ${expectedPayload}; ${formatInvalidJsonDetails(parseResult.payload, null)}`;
+  return `Invalid payload for /${COMMANDS.EXAMPLE.commandName} ${commandName}: expected ${expectedPayload}; ${formatInvalidJsonDetails(parseResult.payload, null)}`;
 }
 
 async function buildExampleRequest(interaction) {
@@ -4586,7 +4595,7 @@ async function buildExampleRequest(interaction) {
   const raw = resolveRawOption(interaction);
 
   if (!responsePayload) {
-    throw new Error('Provide a response payload for /example.');
+    throw new Error(`Provide a response payload for /${COMMANDS.EXAMPLE.commandName}.`);
   }
 
   logExampleResponseBody(commandName, responsePayload);
@@ -4659,11 +4668,11 @@ async function buildExampleRequest(interaction) {
     };
   }
 
-  if (commandName === 'playerinfo') {
+  if (commandName === COMMANDS.PLAYER_INFO.commandName) {
     const parseResult = getRelayJsonParseResult(responsePayload);
     if (parseResult.error || !parseResult.payload || typeof parseResult.payload !== 'object') {
       throw new Error(buildExampleJsonValidationError(
-        'playerinfo',
+        COMMANDS.PLAYER_INFO.commandName,
         responsePayload,
         'JSON containing vip, perks, overdrives, and ranks',
       ));
@@ -4688,9 +4697,9 @@ async function buildExampleRequest(interaction) {
 
 async function handleExampleCommand(interaction, request) {
   if (request.commandName === 'country_by_ip') {
-    logCountryByIpPayload('request', '/example', request.countryByIpPayload);
+    logCountryByIpPayload('request', `/${COMMANDS.EXAMPLE.commandName}`, request.countryByIpPayload);
     const response = await countryService.resolveRequest(request.countryByIpPayload);
-    logCountryByIpPayload('response', '/example', response);
+    logCountryByIpPayload('response', `/${COMMANDS.EXAMPLE.commandName}`, response);
     await postResponse(
       interaction,
       {
@@ -4709,7 +4718,7 @@ async function handleExampleCommand(interaction, request) {
     return;
   }
 
-  if (request.commandName === 'playerinfo') {
+  if (request.commandName === COMMANDS.PLAYER_INFO.commandName) {
     await postPlayerInfoResponse(
       interaction,
       request,
@@ -4717,7 +4726,7 @@ async function handleExampleCommand(interaction, request) {
         commandName,
         responsePayload: request.responsePayload,
       })),
-      'Posted example response for "/playerinfo".',
+      `Posted example response for "/${COMMANDS.PLAYER_INFO.commandName}".`,
     );
     return;
   }
@@ -4902,7 +4911,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   try {
-    if (interaction.commandName === 'help') {
+    if (interaction.commandName === COMMANDS.HELP.commandName) {
       const requestedHidden = interaction.options.getBoolean('hidden') || false;
       const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
       if (!availabilityResult.allowed) {
@@ -4933,7 +4942,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       flags: MessageFlags.Ephemeral,
     });
 
-    if (interaction.commandName === 'example') {
+    if (interaction.commandName === COMMANDS.EXAMPLE.commandName) {
       const requestedHidden = interaction.options.getBoolean('hidden') || false;
       const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
       if (!availabilityResult.allowed) {
