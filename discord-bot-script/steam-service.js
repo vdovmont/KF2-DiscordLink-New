@@ -128,41 +128,68 @@ class SteamService {
     }
   }
 
-  async resolveResponseTargetDisplay(target, displayCache = new Map()) {
+  async resolveSteamIdentity(steamId, identityCache = new Map()) {
+    const normalizedSteamId = this.normalizeSteamId(steamId);
+    if (!this.isValidSteamId64(normalizedSteamId)) {
+      return {
+        steamId: normalizedSteamId,
+        nickname: normalizedSteamId,
+        profileUrl: '',
+      };
+    }
+
+    if (identityCache.has(normalizedSteamId)) {
+      return identityCache.get(normalizedSteamId);
+    }
+
+    let nickname = normalizedSteamId;
+    try {
+      const user = await this.getCachedUser(normalizedSteamId);
+      nickname = user?.nickname || normalizedSteamId;
+    } catch (error) {
+      logWarn(`Could not resolve Steam identity for ${normalizedSteamId}: ${error.message || error}`);
+    }
+
+    const identity = {
+      steamId: normalizedSteamId,
+      nickname,
+      profileUrl: `https://steamcommunity.com/profiles/${normalizedSteamId}/`,
+    };
+    identityCache.set(normalizedSteamId, identity);
+    return identity;
+  }
+
+  async resolveResponseTargetDisplay(target, identityCache = new Map()) {
     const normalizedTarget = String(target || '').trim();
     if (!normalizedTarget) {
       return '';
     }
 
     if (this.isValidSteamId64(normalizedTarget)) {
-      return this.resolveSteamIdDisplayName(normalizedTarget, displayCache);
+      const identity = await this.resolveSteamIdentity(normalizedTarget, identityCache);
+      return this.formatSteamIdentityLink(identity);
     }
 
     return normalizedTarget;
   }
 
-  async resolveSteamIdDisplayName(steamId, displayCache = new Map()) {
-    const normalizedSteamId = String(steamId || '').trim();
-    if (!normalizedSteamId) {
+  async resolveSteamIdProfileLink(steamId, identityCache = new Map()) {
+    const identity = await this.resolveSteamIdentity(steamId, identityCache);
+    return this.formatSteamIdentityLink(identity);
+  }
+
+  formatSteamIdentityLink(identity) {
+    if (!identity?.steamId) {
       return 'Unknown';
     }
 
-    if (displayCache.has(normalizedSteamId)) {
-      return displayCache.get(normalizedSteamId);
+    if (!this.isValidSteamId64(identity.steamId)) {
+      return identity.nickname || identity.steamId;
     }
 
-    let displayName = normalizedSteamId;
-    if (this.isValidSteamId64(normalizedSteamId)) {
-      try {
-        const player = await this.ensureSteamIdExists(normalizedSteamId);
-        displayName = this.formatProfileDisplay(normalizedSteamId, player);
-      } catch (error) {
-        logWarn(`Could not resolve Steam profile ${normalizedSteamId}: ${error.message || error}`);
-      }
-    }
-
-    displayCache.set(normalizedSteamId, displayName);
-    return displayName;
+    const label = identity.nickname || identity.steamId;
+    const escapedLabel = String(label).replace(/([\\[\]])/g, '\\$1');
+    return `[${escapedLabel}](${identity.profileUrl})`;
   }
 
   parseProfileTarget(rawTarget) {
@@ -396,14 +423,11 @@ class SteamService {
   }
 
   formatProfileDisplay(steamId, player) {
-    if (!player) {
-      return steamId;
-    }
-
-    const label = player.personaname || steamId;
-    const escapedLabel = String(label).replace(/([\\[\]])/g, '\\$1');
-    const profileUrl = player.profileurl || `https://steamcommunity.com/profiles/${steamId}/`;
-    return `[${escapedLabel}](${profileUrl})`;
+    return this.formatSteamIdentityLink({
+      steamId,
+      nickname: player?.personaname || steamId,
+      profileUrl: player?.profileurl || `https://steamcommunity.com/profiles/${steamId}/`,
+    });
   }
 
   async getPlayerSummary(steamId) {

@@ -2092,6 +2092,36 @@ function normalizeVotePlayerName(value) {
   return String(value || '').trim();
 }
 
+async function resolveIncomingPlayerName(value) {
+  const playerName = normalizeVotePlayerName(value);
+  const steamId = steamService.normalizeSteamId(playerName);
+  if (!steamService.isValidSteamId64(steamId)) {
+    return playerName;
+  }
+
+  const identity = await steamService.resolveSteamIdentity(steamId);
+  return identity.nickname;
+}
+
+async function resolveVotePayloadPlayerNames(payload) {
+  const players = Array.isArray(payload.players)
+    ? await Promise.all(payload.players.map(async (player) => {
+      if (player && typeof player === 'object') {
+        return { ...player, name: await resolveIncomingPlayerName(player.name) };
+      }
+      return resolveIncomingPlayerName(player);
+    }))
+    : payload.players;
+
+  return {
+    ...payload,
+    initiator: await resolveIncomingPlayerName(payload.initiator),
+    target: await resolveIncomingPlayerName(payload.target),
+    player: await resolveIncomingPlayerName(payload.player),
+    players,
+  };
+}
+
 function quoteVotePlayerName(value) {
   return `"${normalizeVotePlayerName(value) || 'Unknown'}"`;
 }
@@ -2494,6 +2524,24 @@ function updateVotePlayerConnectionFromChat(config, chatMessage) {
   queueVoteMessageEdit(state);
 }
 
+async function resolvePlayerConnectionChatMessage(chatMessage) {
+  const connectionLog = parseVotePlayerConnectionLog(chatMessage.content);
+  if (!connectionLog?.playerName) {
+    return chatMessage;
+  }
+
+  const normalizedSteamId = steamService.normalizeSteamId(connectionLog.playerName);
+  if (!steamService.isValidSteamId64(normalizedSteamId)) {
+    return chatMessage;
+  }
+
+  const identity = await steamService.resolveSteamIdentity(normalizedSteamId);
+  return {
+    ...chatMessage,
+    content: `${identity.nickname} ${connectionLog.action === 'left' ? 'left' : 'entered'} the game.`,
+  };
+}
+
 async function startVoteState(config, payload) {
   const difficulty = getVoteStateKey(config);
   clearVoteState(difficulty);
@@ -2625,22 +2673,24 @@ function finishVoteState(config, payload) {
 }
 
 async function handleKf2VotePayload(config, payload) {
-  if (isVoteStartSubtype(payload.subtype)) {
-    await startVoteState(config, payload);
+  const resolvedPayload = await resolveVotePayloadPlayerNames(payload);
+
+  if (isVoteStartSubtype(resolvedPayload.subtype)) {
+    await startVoteState(config, resolvedPayload);
     return;
   }
 
-  if (payload.subtype === 'vote') {
-    updateVoteState(config, payload);
+  if (resolvedPayload.subtype === 'vote') {
+    updateVoteState(config, resolvedPayload);
     return;
   }
 
-  if (payload.subtype === 'result') {
-    finishVoteState(config, payload);
+  if (resolvedPayload.subtype === 'result') {
+    finishVoteState(config, resolvedPayload);
     return;
   }
 
-  logInvalidKf2Json(config, 'vote', payload, `unknown vote subtype "${payload.subtype}"`);
+  logInvalidKf2Json(config, 'vote', resolvedPayload, `unknown vote subtype "${resolvedPayload.subtype}"`);
 }
 
 function formatRankNumber(value) {
@@ -2661,7 +2711,7 @@ function getMonthlyVipDaysForRank(rank) {
   return Math.max(11 - rankValue, 0);
 }
 
-async function buildMonthlyRewardDisplayCache(payload) {
+async function buildMonthlyRewardIdentityCache(payload) {
   const cache = new Map();
   const steamIds = new Set();
 
@@ -2681,7 +2731,7 @@ async function buildMonthlyRewardDisplayCache(payload) {
 
   for (const steamId of steamIds) {
     if (steamId) {
-      await steamService.resolveSteamIdDisplayName(steamId, cache);
+      await steamService.resolveSteamIdProfileLink(steamId, cache);
     }
   }
 
@@ -2706,7 +2756,7 @@ function getMonthlyRewardDifficultyEntries(payload) {
 }
 
 async function buildMonthlyRankingRewardBlocks(payload) {
-  const displayCache = await buildMonthlyRewardDisplayCache(payload);
+  const identityCache = await buildMonthlyRewardIdentityCache(payload);
   const intro = [
     'Time UP ! Monthly VIP rewards have been delivered and a new month has started. Monthly rank score is now reset',
     'Sum up for scores, ranks and rewards:',
@@ -2738,7 +2788,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
         points: `${Number.isInteger(player.points) ? player.points : 0} points`,
         rewardDays: rewardDays === 0 ? '' : `+${rewardDays}`,
         dayLabel: rewardDays === 0 ? '' : rewardDays === 1 ? 'day' : 'days',
-        player: await steamService.resolveSteamIdDisplayName(player.steamId, displayCache),
+        player: await steamService.resolveSteamIdProfileLink(player.steamId, identityCache),
       };
     }));
     const rankWidth = Math.max(...rows.map((row) => getDiscordTextWidth(row.rank)));
@@ -2771,7 +2821,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
       }))
       .map(async (player) => ({
         dayCount: player.days,
-        player: await steamService.resolveSteamIdDisplayName(player.steamId, displayCache),
+        player: await steamService.resolveSteamIdProfileLink(player.steamId, identityCache),
       }))))
       .sort((left, right) => (right.dayCount - left.dayCount) || left.player.localeCompare(right.player))
       .map((row) => ({
@@ -3151,7 +3201,16 @@ class Kf2Connection {
     this.reconnectTimer = null;
     this.pendingRequest = null;
     this.countryRequestQueue = Promise.resolve();
+    this.playerEventQueue = Promise.resolve();
     this.manuallyStopped = false;
+  }
+
+  queueVotePayload(payload) {
+    this.playerEventQueue = this.playerEventQueue
+      .then(() => handleKf2VotePayload(this.config, payload))
+      .catch((error) => {
+        logVoteWarn(`Failed to process vote payload for "${this.config.name}": ${error.message || error}`);
+      });
   }
 
   start() {
@@ -3261,7 +3320,7 @@ class Kf2Connection {
 
       const votePayload = parseVotePayload(rawLine);
       if (votePayload) {
-        void handleKf2VotePayload(this.config, votePayload);
+        this.queueVotePayload(votePayload);
         return;
       }
 
@@ -3300,7 +3359,7 @@ class Kf2Connection {
 
     const votePayload = parseVotePayload(message);
     if (votePayload) {
-      void handleKf2VotePayload(this.config, votePayload);
+      this.queueVotePayload(votePayload);
       return;
     }
 
@@ -3322,8 +3381,20 @@ class Kf2Connection {
     try {
       const chatMessage = parseKf2ChatPayload(message, this.config);
       updateServerWaveFromChat(this.config, chatMessage);
-      updateVotePlayerConnectionFromChat(this.config, chatMessage);
-      void forwardKf2ChatToDiscord(this.config, chatMessage);
+      if (parseVotePlayerConnectionLog(chatMessage.content)) {
+        this.playerEventQueue = this.playerEventQueue
+          .then(async () => {
+            const forwardedChatMessage = await resolvePlayerConnectionChatMessage(chatMessage);
+            updateVotePlayerConnectionFromChat(this.config, forwardedChatMessage);
+            await forwardKf2ChatToDiscord(this.config, forwardedChatMessage);
+          })
+          .catch((error) => {
+            logWarn(`Failed to resolve player connection log for "${this.config.name}": ${error.message || error}`);
+          });
+      } else {
+        updateVotePlayerConnectionFromChat(this.config, chatMessage);
+        void forwardKf2ChatToDiscord(this.config, chatMessage);
+      }
     } catch (error) {
       logWarn(`Failed to process KF2 message from "${this.config.name}": ${error.message || error}`);
     }
@@ -4006,7 +4077,7 @@ function formatSignedPercent(value) {
   return `${numberValue > 0 ? '+' : ''}${numberValue}%`;
 }
 
-function formatInfoResponse(interaction, request, responsePayload) {
+async function formatInfoResponse(interaction, request, responsePayload) {
   if (request.commandName !== COMMANDS.SERVER_INFO.commandName) {
     return responsePayload;
   }
@@ -4094,8 +4165,13 @@ function formatInfoResponse(interaction, request, responsePayload) {
   }
 
   if (Array.isArray(info.players) && info.players.length > 0) {
-    const playerEntries = info.players
+    const resolvedPlayers = await Promise.all(info.players
       .filter((player) => player && typeof player.name === 'string' && player.name.trim() !== '')
+      .map(async (player) => ({
+        ...player,
+        name: await resolveIncomingPlayerName(player.name),
+      })));
+    const playerEntries = resolvedPlayers
       .map((player) => ({
         name: player.name.trim(),
         displayName: normalizeDiscordTableText(player.name.trim()),
@@ -4174,13 +4250,21 @@ function formatInfoResponse(interaction, request, responsePayload) {
   return lines.join('\n');
 }
 
-function formatRankResponse(request, responsePayload) {
+async function formatRankResponse(request, responsePayload) {
   if (request.commandName !== COMMANDS.RANKS.commandName
     && request.commandName !== COMMANDS.RANKINGS.commandName) {
     return responsePayload;
   }
 
-  const rankings = parseRankings(responsePayload);
+  const parsedRankings = parseRankings(responsePayload);
+  const rankings = await Promise.all(parsedRankings.map(async (entry) => {
+    const playerName = await resolveIncomingPlayerName(entry.playerName);
+    return {
+      ...entry,
+      playerName,
+      displayPlayerName: normalizeDiscordTableText(playerName),
+    };
+  }));
   if (rankings.length > 0) {
     const difficultyLabel = getDifficultyLabel(request.difficulty || 'server');
     const longestPlayerNameLength = Math.max(
@@ -4386,14 +4470,14 @@ async function formatResponse(interaction, request, responsePayload) {
   if (effectiveRequest.commandName === COMMANDS.PERKS.commandName) {
     formattedResponse = formatPerkResponse(interaction, effectiveRequest, responsePayload);
   } else if (effectiveRequest.commandName === COMMANDS.SERVER_INFO.commandName) {
-    formattedResponse = formatInfoResponse(interaction, effectiveRequest, responsePayload);
+    formattedResponse = await formatInfoResponse(interaction, effectiveRequest, responsePayload);
   } else if (effectiveRequest.commandName === COMMANDS.VIP_INFO.commandName) {
     formattedResponse = formatVipInfoResponse(effectiveRequest, responsePayload);
   } else if (effectiveRequest.commandName === COMMANDS.OVERDRIVES.commandName) {
     formattedResponse = formatOverdrivesResponse(effectiveRequest, responsePayload);
   } else if (effectiveRequest.commandName === COMMANDS.RANKS.commandName
     || effectiveRequest.commandName === COMMANDS.RANKINGS.commandName) {
-    formattedResponse = formatRankResponse(effectiveRequest, responsePayload);
+    formattedResponse = await formatRankResponse(effectiveRequest, responsePayload);
   }
 
   if (!formattedResponse) {
