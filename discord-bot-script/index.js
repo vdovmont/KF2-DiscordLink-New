@@ -3518,6 +3518,8 @@ async function buildRelayRequest(interaction) {
       commandName,
       difficulty: relay.difficulty,
       requestedTarget: target.display,
+      requestedTargetType: target.type,
+      requestedTargetValue: target.value,
       payloads: PLAYER_INFO_COMMANDS.map(({ commandName: playerCommandName }) => ({
         commandName: playerCommandName,
         payload: buildPlayerTargetPayload(playerCommandName, target),
@@ -4221,6 +4223,49 @@ function formatPlayerSteamIdentity(steamId) {
   ].join('\n');
 }
 
+function formatDiscordInlineCode(value) {
+  return `\`${String(value || '').replace(/`/g, '\u02CB')}\``;
+}
+
+function normalizePlayerIdentity(value) {
+  return String(value || '').trim().normalize('NFKC').toLocaleLowerCase('en-US');
+}
+
+function getTargetDisplayNickname(targetDisplay) {
+  const display = String(targetDisplay || '').trim();
+  const markdownLink = display.match(/^\[((?:\\.|[^\]])*)\]\([^)]+\)$/);
+  return markdownLink
+    ? markdownLink[1].replace(/\\([\\[\]])/g, '$1')
+    : display;
+}
+
+function isRequestedPlayerTargetMatch(request, responseTarget, responseSteamId) {
+  if (request.requestedTargetType === 'steamid' && responseSteamId) {
+    return steamService.normalizeSteamId(request.requestedTargetValue) === responseSteamId;
+  }
+
+  if (request.requestedTargetType === 'nickname') {
+    return normalizePlayerIdentity(request.requestedTargetValue)
+      === normalizePlayerIdentity(getTargetDisplayNickname(responseTarget));
+  }
+
+  return normalizePlayerIdentity(getTargetDisplayNickname(request.requestedTarget))
+    === normalizePlayerIdentity(getTargetDisplayNickname(responseTarget));
+}
+
+function formatRequestedPlayerTargetLine(request) {
+  if (request.requestedTargetType === 'steamid') {
+    const steamId = steamService.normalizeSteamId(request.requestedTargetValue);
+    const requestedDisplay = String(request.requestedTarget || '').trim();
+    const profileLink = /^\[((?:\\.|[^\]])*)\]\([^)]+\)$/.test(requestedDisplay)
+      ? requestedDisplay
+      : `[${steamId}](https://steamcommunity.com/profiles/${steamId}/)`;
+    return `(requested ${profileLink}, steamid ${formatDiscordInlineCode(steamId)})`;
+  }
+
+  return `(requested ${formatDiscordInlineCode(request.requestedTargetValue || request.requestedTarget)})`;
+}
+
 function prependRequestedTargetHeader(request, responseText) {
   if (!request.requestedTarget || request.suppressRequestedTargetHeader) {
     return responseText;
@@ -4312,8 +4357,13 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
   }
 
   const targetDisplay = responseTarget || request.requestedTarget;
+  const requestedTargetSuffix = responseTarget
+    && request.requestedTarget
+    && !isRequestedPlayerTargetMatch(request, responseTarget, responseSteamId)
+    ? `\n${formatRequestedPlayerTargetLine(request)}`
+    : '';
   const targetHeader = targetDisplay
-    ? `Info about ${targetDisplay}`
+    ? `Info about ${targetDisplay}${requestedTargetSuffix}`
     : 'Player info';
   const steamIdentity = formatPlayerSteamIdentity(responseSteamId);
   const identityBlock = steamIdentity ? `\n\n${steamIdentity}` : '';
@@ -4601,6 +4651,8 @@ async function buildExampleRequest(interaction) {
     commandName,
     difficulty,
     requestedTarget: resolvedTarget?.display || null,
+    requestedTargetType: resolvedTarget?.type || null,
+    requestedTargetValue: resolvedTarget?.value || null,
     responsePayload,
     hidden,
     raw,
