@@ -1303,6 +1303,7 @@ const commandDefinitions = [
               COMMANDS.RANKINGS,
             ].map(({ commandName }) => ({ name: commandName, value: commandName })),
             { name: 'country-by-ip', value: 'country-by-ip' },
+            { name: 'discord-relay', value: 'discord-relay' },
             { name: 'webhook', value: 'webhook' },
             { name: 'month-ranking-rewards', value: 'month-ranking-rewards' },
             { name: 'target', value: 'target' },
@@ -1312,7 +1313,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('response')
-          .setDescription('KF2 response payload, or request payload for country-by-ip')
+          .setDescription('Response or test payload for the selected example type')
           .setRequired(true),
       )
       .addStringOption((option) =>
@@ -4921,6 +4922,16 @@ async function buildExampleRequest(interaction) {
 
   logExampleRequestBody(commandName, responsePayload);
 
+  if (commandName === 'discord-relay') {
+    return {
+      commandName,
+      responsePayload,
+      hidden,
+      raw,
+      discordRelayPayload: parseDiscordRelayExamplePayload(responsePayload),
+    };
+  }
+
   if (commandName === 'webhook') {
     const webhookConfig = buildExampleWebhookConfig(difficulty);
     let chatMessage;
@@ -5046,6 +5057,30 @@ async function buildExampleRequest(interaction) {
 }
 
 async function handleExampleCommand(interaction, request) {
+  if (request.commandName === 'discord-relay') {
+    const example = request.discordRelayPayload;
+    const relayContent = buildDiscordChatRelayContent(example);
+    const relayPayload = example.authorBot || !relayContent
+      ? ''
+      : `[Discord] ${example.username || getMemberNickname(interaction)}: ${relayContent}`;
+    const responseText = relayPayload
+      ? `KF2 receives:\n${escapeDiscordMarkdownText(relayPayload)}`
+      : 'KF2 receives nothing; this message would be ignored.';
+
+    if (request.hidden) {
+      await editDiscordReply(interaction, { content: responseText });
+      return;
+    }
+
+    await sendDiscordMessage(interaction.channel, {
+      content: wrapFormattedResponse(interaction, request, responseText),
+    });
+    await editDiscordReply(interaction, {
+      content: 'Posted the Discord-to-KF2 relay example in this channel.',
+    });
+    return;
+  }
+
   if (request.commandName === 'webhook') {
     const steamUser = request.chatMessage.avatarUrl
       ? { username: request.chatMessage.username, avatarUrl: request.chatMessage.avatarUrl }
@@ -5238,6 +5273,94 @@ function getMessageDisplayName(message) {
   return message.member?.displayName || message.author.globalName || message.author.username;
 }
 
+function formatUnicodeEmojiForKf2(emoji) {
+  const codePoints = [...emoji]
+    .map((character) => character.codePointAt(0))
+    .filter((codePoint) => codePoint !== 0xFE0E && codePoint !== 0xFE0F && codePoint !== 0x200D)
+    .map((codePoint) => `U+${codePoint.toString(16).toUpperCase()}`);
+  return `emoji:${codePoints.join('-')}:`;
+}
+
+function formatDiscordEmojisForKf2(content) {
+  const customEmojiPattern = /<a?:([A-Za-z0-9_]+):\d+>/g;
+  const unicodeEmojiPattern = /(?:[\p{Regional_Indicator}]{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\p{Emoji_Modifier})?)*)/gu;
+  return String(content || '')
+    .replace(customEmojiPattern, 'emoji:$1:')
+    .replace(unicodeEmojiPattern, formatUnicodeEmojiForKf2);
+}
+
+function getDiscordMessageFileReferences(message) {
+  const references = [];
+
+  for (const attachment of message.attachments?.values?.() || []) {
+    const reference = attachment.url || attachment.proxyURL || attachment.name;
+    if (reference) {
+      references.push(reference);
+    }
+  }
+
+  for (const embed of message.embeds || []) {
+    if (!['gifv', 'video', 'image'].includes(embed.type)) {
+      continue;
+    }
+
+    const reference = embed.url || embed.video?.url || embed.image?.url;
+    if (reference) {
+      references.push(reference);
+    }
+  }
+
+  return [...new Set(references)];
+}
+
+function buildDiscordChatRelayContent(message) {
+  let content = formatDiscordEmojisForKf2(message.content);
+  const additionalFiles = [];
+
+  for (const reference of getDiscordMessageFileReferences(message)) {
+    const formattedReference = `file:${reference}`;
+    if (content.includes(reference)) {
+      content = content.split(reference).join(formattedReference);
+    } else {
+      additionalFiles.push(formattedReference);
+    }
+  }
+
+  return [content.trim(), ...additionalFiles].filter(Boolean).join(' ');
+}
+
+function parseDiscordRelayExamplePayload(responsePayload) {
+  const parseResult = getRelayJsonParseResult(responsePayload);
+  if (!parseResult.error
+    && parseResult.payload
+    && typeof parseResult.payload === 'object'
+    && !Array.isArray(parseResult.payload)) {
+    const payload = parseResult.payload;
+    const attachments = Array.isArray(payload.attachments)
+      ? payload.attachments.map((attachment) => (
+        typeof attachment === 'string' ? { url: attachment } : attachment
+      ))
+      : [];
+    const embeds = Array.isArray(payload.embeds) ? payload.embeds : [];
+
+    return {
+      authorBot: payload.authorBot === true,
+      username: String(payload.username || '').trim(),
+      content: String(payload.content || ''),
+      attachments,
+      embeds,
+    };
+  }
+
+  return {
+    authorBot: false,
+    username: '',
+    content: responsePayload,
+    attachments: [],
+    embeds: [],
+  };
+}
+
 function initializeKf2Connections() {
   const serverConfigs = loadServerConfigs();
 
@@ -5269,7 +5392,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot || !message.guild) {
+  if (!message.guild || message.author.bot || message.author.id === client.user?.id) {
     return;
   }
 
@@ -5282,7 +5405,12 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  const payload = `[Discord] ${getMessageDisplayName(message)}: ${message.content}`;
+  const relayContent = buildDiscordChatRelayContent(message);
+  if (!relayContent) {
+    return;
+  }
+
+  const payload = `[Discord] ${getMessageDisplayName(message)}: ${relayContent}`;
 
   for (const connection of matchingConnections) {
     try {
