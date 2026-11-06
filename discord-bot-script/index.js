@@ -4098,6 +4098,10 @@ function formatInfoResponse(interaction, request, responsePayload) {
       : 1;
     const longestPrestigeLength = Math.max(1, ...playerEntries.map((player) => String(player.prestige).length));
     const longestLevelLength = Math.max(1, ...playerEntries.map((player) => String(player.level).length));
+    const longestCountryLength = Math.max(
+      3,
+      ...playerEntries.map((player) => getDiscordTextWidth(player.country)),
+    );
 
     for (const player of playerEntries) {
       const prefix = player.perk
@@ -4110,8 +4114,9 @@ function formatInfoResponse(interaction, request, responsePayload) {
       }
       const paddedPrestige = String(player.prestige).padStart(longestPrestigeLength, ' ');
       const paddedLevel = String(player.level).padStart(longestLevelLength, ' ');
+      const paddedCountry = padEndByDiscordTextWidth(player.country, longestCountryLength);
       rankParts.push(paddedPrestige, paddedLevel);
-      const rowParts = [rankParts.join('-'), statusEmoji, player.country, player.displayName];
+      const rowParts = [rankParts.join('-'), statusEmoji, paddedCountry, player.displayName];
 
       lines.push(`${prefix ? `${prefix} ` : ''}${formatDiscordInlineCode(rowParts.join(' | '))}`);
     }
