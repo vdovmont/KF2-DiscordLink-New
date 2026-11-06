@@ -28,11 +28,12 @@ const {
   configureLogging,
   logCountryByIpPayload,
   logError,
-  logExampleResponseBody,
+  logExampleRequestBody,
   logInfo,
   logKf2ConnectionInfo,
   logKf2ConnectionWarn,
   logReceivedKf2Body,
+  logSentKf2Request,
   logVoteInfo,
   logVoteWarn,
   logWarn,
@@ -564,6 +565,7 @@ function loadRuntimeConfig(env = process.env) {
     kf2PauseVotePassPercent: parsePercent(env.KF2_PAUSE_VOTE_PASS_PERCENT, 66),
     kf2SkipVotePassPercent: parsePercent(env.KF2_SKIP_VOTE_PASS_PERCENT, 100),
     toggleVoteLogs: parseToggle(env.TOGGLE_VOTE_LOGS, parseBoolean(env.KF2_CONSOLE_LOGS_ENABLED, false)),
+    toggleKf2SendBodyLogs: parseToggle(env.TOGGLE_KF2_SEND_BODY_LOGS, false),
     toggleKf2ReceiveBodyLogs: parseToggle(
       env.TOGGLE_KF2_RECEIVE_BODY_LOGS,
       parseToggle(env.TOGGLE_FULL_JSON_BODY_LOGS, false),
@@ -3410,6 +3412,7 @@ class Kf2Connection {
 
       try {
         this.sendMessage(payload);
+        logSentKf2Request(this.config, payload);
       } catch (error) {
         this.pendingRequest = null;
         clearTimeout(timeout);
@@ -4775,7 +4778,7 @@ async function buildExampleRequest(interaction) {
     throw new Error(`Provide a response payload for /${COMMANDS.EXAMPLE.commandName}.`);
   }
 
-  logExampleResponseBody(commandName, responsePayload);
+  logExampleRequestBody(commandName, responsePayload);
 
   if (commandName === 'vote') {
     const votePayload = parseVotePayload(responsePayload);

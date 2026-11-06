@@ -8,6 +8,7 @@ const logSettings = {
   logFileRetentionDays: 7,
   toggleAllFileLogs: true,
   vote: false,
+  kf2SendBody: false,
   kf2ReceiveBody: false,
   kf2Connection: false,
   steamFetch: false,
@@ -202,6 +203,14 @@ function logKf2ConnectionWarn(message) {
   logCategory('kf2Connection', 'warn', message);
 }
 
+function logSentKf2Request(config, payload) {
+  logCategory(
+    'kf2SendBody',
+    'log',
+    `Sending KF2 request to "${config.name}":\n${String(payload || '').trim()}`,
+  );
+}
+
 function logReceivedKf2Body(config, payload) {
   logCategory(
     'kf2ReceiveBody',
@@ -210,11 +219,11 @@ function logReceivedKf2Body(config, payload) {
   );
 }
 
-function logExampleResponseBody(commandName, payload) {
+function logExampleRequestBody(commandName, payload) {
   logCategory(
-    'kf2ReceiveBody',
+    'kf2SendBody',
     'log',
-    `Received /example ${commandName} response payload:\n${String(payload || '').trim()}`,
+    `Submitted /example ${commandName} payload:\n${String(payload || '').trim()}`,
   );
 }
 
@@ -242,6 +251,7 @@ function configureLogging(config = {}) {
   const previousRetentionDays = logSettings.logFileRetentionDays;
   const categorySettings = {
     vote: config.toggleVoteLogs,
+    kf2SendBody: config.toggleKf2SendBodyLogs,
     kf2ReceiveBody: config.toggleKf2ReceiveBodyLogs,
     kf2Connection: config.toggleKf2ConnectionLogs,
     steamFetch: config.toggleSteamFetchLogs,
@@ -278,11 +288,12 @@ module.exports = {
   configureLogging,
   logCountryByIpPayload,
   logError,
-  logExampleResponseBody,
+  logExampleRequestBody,
   logInfo,
   logKf2ConnectionInfo,
   logKf2ConnectionWarn,
   logReceivedKf2Body,
+  logSentKf2Request,
   logSteamCache,
   logSteamCacheWarn,
   logSteamFetch,
