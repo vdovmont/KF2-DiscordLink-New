@@ -25,6 +25,10 @@ const {
   initializeDataFiles,
 } = require('./data-files');
 const {
+  escapeDiscordMarkdownText,
+  unescapeDiscordMarkdownText,
+} = require('./discord-format');
+const {
   configureLogging,
   logCountryByIpPayload,
   logError,
@@ -907,7 +911,7 @@ function addRawOption(commandBuilder) {
   return commandBuilder.addBooleanOption((option) =>
     option
       .setName('raw')
-      .setDescription('Post the raw KF2 response without formatting (restricted by role)')
+      .setDescription('Post the raw KF2 response without formatting (restricted by role - dev-use only)')
       .setRequired(false),
   );
 }
@@ -1298,6 +1302,7 @@ const commandDefinitions = [
               COMMANDS.RANKINGS,
             ].map(({ commandName }) => ({ name: commandName, value: commandName })),
             { name: 'country_by_ip', value: 'country_by_ip' },
+            { name: 'webhook', value: 'webhook' },
             { name: 'month-ranking-rewards', value: 'month-ranking-rewards' },
             { name: 'target', value: 'target' },
             { name: 'vote', value: 'vote' },
@@ -1312,7 +1317,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('difficulty')
-          .setDescription(`Difficulty to mimic for /${COMMANDS.RANKS.commandName}, /${COMMANDS.SERVER_INFO.commandName}, or vote`)
+          .setDescription(`Difficulty to mimic for /${COMMANDS.RANKS.commandName}, /${COMMANDS.SERVER_INFO.commandName}, webhook, or vote`)
           .setRequired(false)
           .addChoices(
             { name: 'Normal', value: 'normal' },
@@ -1997,6 +2002,7 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
     : await steamService.resolveChatUser(chatMessage.steamId, chatMessage.username);
   const username = steamUser.username;
   const avatarUrl = steamUser.avatarUrl;
+  const discordContent = formatKf2ChatContentForDiscord(chatMessage.content);
 
   try {
     if (config.webhookUrl) {
@@ -2007,7 +2013,7 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
       const payload = {
         username,
         avatar_url: avatarUrl || undefined,
-        content: chatMessage.content,
+        content: discordContent,
       };
 
       try {
@@ -2044,7 +2050,7 @@ async function forwardKf2ChatToDiscord(config, chatMessage) {
         }
 
         const payload = {
-          content: `[${config.name}] ${username}: ${chatMessage.content}`,
+          content: `[${config.name}] ${escapeDiscordMarkdownText(username)}: ${discordContent}`,
         };
 
         try {
@@ -2123,7 +2129,7 @@ async function resolveVotePayloadPlayerNames(payload) {
 }
 
 function quoteVotePlayerName(value) {
-  return `"${normalizeVotePlayerName(value) || 'Unknown'}"`;
+  return `"${escapeDiscordMarkdownText(normalizeVotePlayerName(value) || 'Unknown')}"`;
 }
 
 function getVotePlayerKey(playerName) {
@@ -2259,7 +2265,7 @@ function appendVotePlayerSection(lines, title, players, state, options = {}) {
   }
 
   for (const player of players) {
-    lines.push(`${getVoteMark(state, player, options)}\t${player.name}`);
+    lines.push(`${getVoteMark(state, player, options)}\t${escapeDiscordMarkdownText(player.name)}`);
   }
 }
 
@@ -2460,6 +2466,16 @@ function parseVotePlayerConnectionLog(content) {
   }
 
   return null;
+}
+
+function formatKf2ChatContentForDiscord(content) {
+  const connectionLog = parseVotePlayerConnectionLog(content);
+  if (!connectionLog?.playerName) {
+    return content;
+  }
+
+  const playerName = escapeDiscordMarkdownText(connectionLog.playerName);
+  return `${playerName} ${connectionLog.action === 'left' ? 'left' : 'entered'} the game.`;
 }
 
 function parseStartingWaveLog(content) {
@@ -3540,7 +3556,7 @@ function formatTargetResolutionExample(input, target) {
     `Detected as: ${target.type}`,
     `Source: ${target.source}`,
     `Value sent to KF2: ${target.type}:${target.value}`,
-    `Display in responses: ${target.display}`,
+    `Display in responses: ${formatDiscordPlayerDisplay(target.display)}`,
     `Example KF2 request: ${buildPlayerTargetPayload(COMMANDS.PERKS.payloadName, target)}`,
     `Steam API validation: ${steamApiStatus}`,
   ].join('\n');
@@ -3566,7 +3582,7 @@ async function formatResponseTargetResolutionExample(responsePayload) {
 
   return [
     `Response: ${suppressDiscordLinkEmbeds(responsePayload)}`,
-    `Response target: ${responseTarget}`,
+    `Response target: ${escapeDiscordMarkdownText(responseTarget)}`,
     `Detected as: ${detectedAs}`,
     `Display in formatted responses: ${display}`,
   ].join('\n');
@@ -4335,8 +4351,15 @@ async function formatRankResponse(request, responsePayload) {
   return lines.join('\n');
 }
 
+function formatDiscordPlayerDisplay(target) {
+  const display = String(target || '').trim();
+  const isSteamProfileLink = /^\[((?:\\.|[^\]])*)\]\(https:\/\/steamcommunity\.com\/profiles\/\d+\/?\)$/i
+    .test(display);
+  return isSteamProfileLink ? display : escapeDiscordMarkdownText(display);
+}
+
 function formatResponseTargetDisplay(target) {
-  return `"${String(target || '').trim()}"`;
+  return `"${formatDiscordPlayerDisplay(target)}"`;
 }
 
 function formatPlayerSteamIdentity(steamId) {
@@ -4364,7 +4387,7 @@ function getTargetDisplayNickname(targetDisplay) {
   const display = String(targetDisplay || '').trim();
   const markdownLink = display.match(/^\[((?:\\.|[^\]])*)\]\([^)]+\)$/);
   return markdownLink
-    ? markdownLink[1].replace(/\\([\\[\]])/g, '$1')
+    ? unescapeDiscordMarkdownText(markdownLink[1])
     : display;
 }
 
@@ -4841,6 +4864,37 @@ function buildExampleVoteConfig(difficulty) {
   };
 }
 
+function buildExampleWebhookConfig(difficulty) {
+  const selectedDifficulty = difficulty || getActiveDifficulties()[0] || 'normal';
+  const env = dotenv && fs.existsSync(ENV_FILE_PATH)
+    ? { ...process.env, ...dotenv.parse(fs.readFileSync(ENV_FILE_PATH, 'utf8')) }
+    : process.env;
+
+  for (let index = 1; index <= KF2_SERVER_COUNT; index += 1) {
+    const prefix = `KF2_SERVER_${index}_`;
+    const configuredDifficulty = String(env[`${prefix}DIFFICULTY`] || '').trim().toLowerCase();
+    if (configuredDifficulty !== selectedDifficulty) {
+      continue;
+    }
+
+    const webhookUrl = String(env[`${prefix}WEBHOOK_URL`] || '').trim();
+    if (!webhookUrl) {
+      throw new Error(`${prefix}WEBHOOK_URL is required for /${COMMANDS.EXAMPLE.commandName} webhook.`);
+    }
+
+    return {
+      index,
+      name: String(env[`${prefix}NAME`] || configuredDifficulty || `server-${index}`).trim(),
+      difficulty: configuredDifficulty,
+      webhookUrl,
+    };
+  }
+
+  throw new Error(
+    `No KF2 server slot with DIFFICULTY=${selectedDifficulty} is configured for /${COMMANDS.EXAMPLE.commandName} webhook.`,
+  );
+}
+
 function buildExampleJsonValidationError(commandName, responsePayload, expectedPayload) {
   const parseResult = getRelayJsonParseResult(responsePayload);
   if (parseResult.error) {
@@ -4865,6 +4919,28 @@ async function buildExampleRequest(interaction) {
   }
 
   logExampleRequestBody(commandName, responsePayload);
+
+  if (commandName === 'webhook') {
+    const webhookConfig = buildExampleWebhookConfig(difficulty);
+    let chatMessage;
+    try {
+      chatMessage = parseKf2ChatPayload(responsePayload, webhookConfig);
+    } catch (error) {
+      throw new Error(
+        `Invalid payload for /${COMMANDS.EXAMPLE.commandName} webhook: expected steamid^$nickname^$message; ${error.message || error}`,
+      );
+    }
+
+    return {
+      commandName,
+      difficulty: webhookConfig.difficulty,
+      responsePayload,
+      hidden,
+      raw,
+      webhookConfig,
+      chatMessage,
+    };
+  }
 
   if (commandName === 'vote') {
     const votePayload = parseVotePayload(responsePayload);
@@ -4969,6 +5045,21 @@ async function buildExampleRequest(interaction) {
 }
 
 async function handleExampleCommand(interaction, request) {
+  if (request.commandName === 'webhook') {
+    const steamUser = request.chatMessage.avatarUrl
+      ? { username: request.chatMessage.username, avatarUrl: request.chatMessage.avatarUrl }
+      : await steamService.resolveChatUser(request.chatMessage.steamId, request.chatMessage.username);
+    await sendWebhookMessage(request.webhookConfig.webhookUrl, {
+      username: steamUser.username,
+      avatar_url: steamUser.avatarUrl || undefined,
+      content: formatKf2ChatContentForDiscord(request.chatMessage.content),
+    });
+    await editDiscordReply(interaction, {
+      content: `Posted the example KF2 chat message through the "${request.webhookConfig.name}" webhook.`,
+    });
+    return;
+  }
+
   if (request.commandName === 'country_by_ip') {
     logCountryByIpPayload('request', `/${COMMANDS.EXAMPLE.commandName}`, request.countryByIpPayload);
     const response = await countryService.resolveRequest(request.countryByIpPayload);

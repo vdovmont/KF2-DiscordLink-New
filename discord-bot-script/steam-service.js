@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { escapeDiscordMarkdownText } = require('./discord-format');
 const {
   logInfo,
   logSteamCache,
@@ -188,7 +189,7 @@ class SteamService {
     }
 
     const label = identity.nickname || identity.steamId;
-    const escapedLabel = String(label).replace(/([\\[\]])/g, '\\$1');
+    const escapedLabel = escapeDiscordMarkdownText(label);
     return `[${escapedLabel}](${identity.profileUrl})`;
   }
 
