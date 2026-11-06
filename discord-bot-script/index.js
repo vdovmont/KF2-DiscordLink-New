@@ -744,6 +744,7 @@ function readServerConfig(index, env = process.env) {
     forwardKf2ToDiscord: parseBoolean(env[`${prefix}FORWARD_KF2_TO_DISCORD`], true),
     forwardDiscordToKf2: parseBoolean(env[`${prefix}FORWARD_DISCORD_TO_KF2`], true),
     encodeNicknames: parseBoolean(env[`${prefix}ENCODE_NICKNAMES`], false),
+    encodeChatMessages: parseBoolean(env[`${prefix}ENCODE_CHAT_MESSAGES`], false),
     commandsEnabled: parseBoolean(env[`${prefix}COMMANDS_ENABLED`], true),
   };
 }
@@ -5602,7 +5603,10 @@ client.on(Events.MessageCreate, async (message) => {
   for (const connection of matchingConnections) {
     try {
       const displayName = formatNicknameForKf2(getMessageDisplayName(message), connection.config);
-      const payload = `[Discord] ${displayName}: ${relayContent}`;
+      const messageContent = connection.config.encodeChatMessages
+        ? unicodeEncode(relayContent)
+        : relayContent;
+      const payload = `[Discord] ${displayName}: ${messageContent}`;
       connection.sendMessage(payload);
     } catch (error) {
       logWarn(`Failed to forward Discord message to "${connection.config.name}": ${error.message || error}`);
