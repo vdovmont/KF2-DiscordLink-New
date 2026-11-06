@@ -17,6 +17,7 @@ const stringWidth = stringWidthModule.default || stringWidthModule;
 const {
   CountryService,
   createUnknownCountryResponse,
+  formatCountryByIpResponse,
   isCountryByIpRequest,
 } = require('./country-service');
 const {
@@ -1301,7 +1302,7 @@ const commandDefinitions = [
               COMMANDS.RANKS,
               COMMANDS.RANKINGS,
             ].map(({ commandName }) => ({ name: commandName, value: commandName })),
-            { name: 'country_by_ip', value: 'country_by_ip' },
+            { name: 'country-by-ip', value: 'country-by-ip' },
             { name: 'webhook', value: 'webhook' },
             { name: 'month-ranking-rewards', value: 'month-ranking-rewards' },
             { name: 'target', value: 'target' },
@@ -1311,7 +1312,7 @@ const commandDefinitions = [
       .addStringOption((option) =>
         option
           .setName('response')
-          .setDescription('KF2 response payload, or request payload for country_by_ip')
+          .setDescription('KF2 response payload, or request payload for country-by-ip')
           .setRequired(true),
       )
       .addStringOption((option) =>
@@ -3450,7 +3451,7 @@ class Kf2Connection {
     this.countryRequestQueue = this.countryRequestQueue
       .then(() => this.handleCountryByIpRequest(parseResult.payload))
       .catch((error) => {
-        logWarn(`Failed to answer country_by_ip request from "${this.config.name}": ${error.message || error}`);
+        logWarn(`Failed to answer country-by-ip request from "${this.config.name}": ${error.message || error}`);
       });
     return true;
   }
@@ -3469,7 +3470,7 @@ class Kf2Connection {
 
     logCountryByIpPayload('response', `KF2 server "${this.config.name}"`, response);
 
-    this.sendMessage(JSON.stringify(response));
+    this.sendMessage(formatCountryByIpResponse(response));
   }
 
   sendMessage(message) {
@@ -4992,13 +4993,13 @@ async function buildExampleRequest(interaction) {
     };
   }
 
-  if (commandName === 'country_by_ip') {
+  if (commandName === 'country-by-ip') {
     const parseResult = getRelayJsonParseResult(responsePayload);
     if (parseResult.error || !isCountryByIpRequest(parseResult.payload)) {
       throw new Error(buildExampleJsonValidationError(
-        'country_by_ip',
+        'country-by-ip',
         responsePayload,
-        'JSON with type="country_by_ip", subtype="request", and an ip array',
+        'JSON with type="country-by-ip", subtype="request", and an ip array',
       ));
     }
 
@@ -5060,7 +5061,7 @@ async function handleExampleCommand(interaction, request) {
     return;
   }
 
-  if (request.commandName === 'country_by_ip') {
+  if (request.commandName === 'country-by-ip') {
     logCountryByIpPayload('request', `/${COMMANDS.EXAMPLE.commandName}`, request.countryByIpPayload);
     const response = await countryService.resolveRequest(request.countryByIpPayload);
     logCountryByIpPayload('response', `/${COMMANDS.EXAMPLE.commandName}`, response);
@@ -5071,8 +5072,8 @@ async function handleExampleCommand(interaction, request) {
         hidden: request.hidden,
         raw: true,
       },
-      JSON.stringify(response, null, 2),
-      'Posted the country_by_ip service response.',
+      formatCountryByIpResponse(response),
+      'Posted the country-by-ip service response.',
     );
     return;
   }

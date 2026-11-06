@@ -243,7 +243,7 @@ function logCountryByIpPayload(direction, source, payload) {
   logCategory(
     'countryByIp',
     'log',
-    `country_by_ip ${direction} (${source}):\n${JSON.stringify(payload)}`,
+    `country-by-ip ${direction} (${source}):\n${JSON.stringify(payload)}`,
   );
 }
 

@@ -40,7 +40,7 @@ function isCountryByIpRequest(payload) {
     payload
     && typeof payload === 'object'
     && !Array.isArray(payload)
-    && payload.type === 'country_by_ip'
+    && payload.type === 'country-by-ip'
     && payload.subtype === 'request',
   );
 }
@@ -49,13 +49,20 @@ function createUnknownCountryResponse(payload) {
   const entries = Array.isArray(payload?.ip) ? payload.ip : [];
 
   return {
-    type: 'country_by_ip',
+    type: 'country-by-ip',
     subtype: 'response',
     ip: entries.map((entry) => ({
       value: entry?.value,
       countryCode: UNKNOWN_COUNTRY_CODE,
     })),
   };
+}
+
+function formatCountryByIpResponse(payload) {
+  const entries = Array.isArray(payload?.ip) ? payload.ip : [];
+  const formattedEntries = entries.map((entry) =>
+    `${String(entry?.value || '').trim()}:${String(entry?.countryCode || UNKNOWN_COUNTRY_CODE).trim() || UNKNOWN_COUNTRY_CODE}`);
+  return `/dsresponse country-by-ip${formattedEntries.length > 0 ? ` ${formattedEntries.join(' ')}` : ''}`;
 }
 
 function alpha2ToAlpha3(countryCode) {
@@ -72,15 +79,15 @@ class CountryService {
 
   async resolveRequest(payload) {
     if (!isCountryByIpRequest(payload)) {
-      throw new Error('Payload is not a country_by_ip request.');
+      throw new Error('Payload is not a country-by-ip request.');
     }
 
     if (!Array.isArray(payload.ip)) {
-      throw new Error('country_by_ip request must contain an ip array.');
+      throw new Error('country-by-ip request must contain an ip array.');
     }
 
     if (payload.ip.length > MAX_BATCH_SIZE) {
-      throw new Error(`country_by_ip request exceeds the ${MAX_BATCH_SIZE}-address limit.`);
+      throw new Error(`country-by-ip request exceeds the ${MAX_BATCH_SIZE}-address limit.`);
     }
 
     const response = createUnknownCountryResponse(payload);
@@ -158,5 +165,6 @@ module.exports = {
   UNKNOWN_COUNTRY_CODE,
   alpha2ToAlpha3,
   createUnknownCountryResponse,
+  formatCountryByIpResponse,
   isCountryByIpRequest,
 };
