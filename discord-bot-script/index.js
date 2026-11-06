@@ -3514,6 +3514,7 @@ async function buildRelayRequest(interaction) {
       commandName,
       difficulty,
       payload: `/dsrequest ${COMMANDS.SERVER_INFO.payloadName}`,
+      allowRelayFailover: false,
       hidden,
       raw,
     };
@@ -3570,6 +3571,7 @@ async function buildRelayRequest(interaction) {
       commandName,
       difficulty: selectedDifficulty,
       payload: `/dsrequest ${COMMANDS.RANKINGS.payloadName}`,
+      allowRelayFailover: false,
       hidden,
       raw,
     };
@@ -4464,12 +4466,72 @@ async function postPlayerInfoResponse(interaction, request, responses, successMe
   });
 }
 
-function sendPayloadToRelay(relay, payload) {
-  if (!relay.connection) {
-    return Promise.reject(new Error(`No KF2 connection is available for "${relay.difficulty}".`));
+function getActiveRelaysInOrder() {
+  const relays = kf2Connections
+    .filter((connection) => connection.config.commandsEnabled && connection.isConnected())
+    .map((connection) => ({
+      difficulty: connection.config.difficulty,
+      name: connection.config.name,
+      host: connection.config.host,
+      port: connection.config.port,
+      connection,
+    }));
+  const difficultyOrder = sortDifficulties(relays.map(({ difficulty }) => difficulty));
+
+  return relays.sort((left, right) => (
+    difficultyOrder.indexOf(left.difficulty) - difficultyOrder.indexOf(right.difficulty)
+  ));
+}
+
+async function sendPayloadToRelay(relay, payload, options = {}) {
+  const allowFailover = options.allowFailover !== false;
+
+  if (!allowFailover && (!relay?.connection || !relay.connection.isConnected())) {
+    throw new Error(`Selected KF2 server "${options.serverLabel || relay?.name || relay?.difficulty || 'unknown'}" is no longer online.`);
   }
 
-  return relay.connection.sendRequest(payload);
+  const attemptedConnections = new Set();
+  let preferredRelay = relay;
+  let lastError = null;
+
+  while (true) {
+    const fallbackRelays = allowFailover ? getActiveRelaysInOrder() : [];
+    const candidates = [preferredRelay, ...fallbackRelays]
+      .filter((candidate, index, relays) => candidate?.connection
+        && relays.findIndex((item) => item?.connection === candidate.connection) === index);
+    const nextRelay = candidates.find((candidate) => !attemptedConnections.has(candidate.connection)
+      && candidate.connection.isConnected()
+      && !candidate.connection.pendingRequest);
+
+    if (!nextRelay) {
+      break;
+    }
+
+    attemptedConnections.add(nextRelay.connection);
+
+    try {
+      return {
+        responsePayload: await nextRelay.connection.sendRequest(payload),
+        relay: nextRelay,
+      };
+    } catch (error) {
+      if (!allowFailover) {
+        throw error;
+      }
+
+      lastError = error;
+      preferredRelay = null;
+      logKf2ConnectionWarn(
+        `KF2 request failed on server "${nextRelay.name}": ${error.message || error}. Trying another online server...`,
+      );
+    }
+  }
+
+  if (lastError) {
+    throw new Error(`All available KF2 servers failed to process the request. Last error: ${lastError.message || lastError}`);
+  }
+
+  throw new Error('No available KF2 server can process the request; all servers are offline or currently busy.');
 }
 
 function getResponseSteamId(responsePayload) {
@@ -4492,12 +4554,15 @@ function getResponseError(responsePayload) {
 async function sendPlayerInfoRequests(relay, request) {
   const responses = [];
   let resolvedSteamTarget = null;
+  let currentRelay = relay;
 
   for (const [index, playerInfoRequest] of request.payloads.entries()) {
     const payload = resolvedSteamTarget
       ? buildPlayerTargetPayload(playerInfoRequest.payloadName, resolvedSteamTarget)
       : playerInfoRequest.payload;
-    const responsePayload = await sendPayloadToRelay(relay, payload);
+    const sendResult = await sendPayloadToRelay(currentRelay, payload);
+    const { responsePayload } = sendResult;
+    currentRelay = sendResult.relay;
 
     responses.push({
       commandName: playerInfoRequest.commandName,
@@ -4505,7 +4570,7 @@ async function sendPlayerInfoRequests(relay, request) {
     });
 
     if (index === 0 && getResponseError(responsePayload)) {
-      return { responses, initialErrorResponsePayload: responsePayload };
+      return { responses, initialErrorResponsePayload: responsePayload, relay: currentRelay };
     }
 
     if (index === 0 && request.requestedTargetType === 'nickname') {
@@ -4517,7 +4582,7 @@ async function sendPlayerInfoRequests(relay, request) {
     }
   }
 
-  return { responses, initialErrorResponsePayload: '' };
+  return { responses, initialErrorResponsePayload: '', relay: currentRelay };
 }
 
 async function processRelayQueue(difficulty) {
@@ -4535,10 +4600,6 @@ async function processRelayQueue(difficulty) {
       try {
         const relay = getRelayByDifficulty(difficulty);
 
-        if (!relay) {
-          throw new Error('Selected difficulty is not active right now.');
-        }
-
         if (job.wasQueued) {
           await editDiscordReply(job.interaction, {
             content: `Your request for "${difficulty}" is now being processed...`,
@@ -4546,14 +4607,18 @@ async function processRelayQueue(difficulty) {
         }
 
         if (job.request.commandName === COMMANDS.PLAYER_INFO.commandName) {
-          const { responses, initialErrorResponsePayload } = await sendPlayerInfoRequests(relay, job.request);
+          const {
+            responses,
+            initialErrorResponsePayload,
+            relay: responseRelay,
+          } = await sendPlayerInfoRequests(relay, job.request);
 
           if (initialErrorResponsePayload) {
             await postResponse(
               job.interaction,
               { ...job.request, commandName: COMMANDS.PERKS.commandName },
               initialErrorResponsePayload,
-              `Sent player info request to KF2 server "${difficulty}" and posted the error response.`,
+              `Sent player info request to KF2 server "${responseRelay.name}" and posted the error response.`,
             );
             continue;
           }
@@ -4562,17 +4627,24 @@ async function processRelayQueue(difficulty) {
             job.interaction,
             job.request,
             responses,
-            `Sent player info requests to KF2 server "${difficulty}" and posted the response.`,
+            `Sent player info requests to KF2 server(s), ending with "${responseRelay.name}", and posted the response.`,
           );
           continue;
         }
 
-        const responsePayload = await sendPayloadToRelay(relay, job.request.payload);
+        const { responsePayload, relay: responseRelay } = await sendPayloadToRelay(
+          relay,
+          job.request.payload,
+          {
+            allowFailover: job.request.allowRelayFailover !== false,
+            serverLabel: difficulty,
+          },
+        );
         await postResponse(
           job.interaction,
           job.request,
           responsePayload,
-          `Sent to KF2 server "${difficulty}" and posted the response.`,
+          `Sent to KF2 server "${responseRelay.name}" and posted the response.`,
         );
       } catch (error) {
         logError(`Failed to process command: ${error.message || error}`);
