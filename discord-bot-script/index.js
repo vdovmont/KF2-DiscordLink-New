@@ -4208,6 +4208,19 @@ function formatResponseTargetDisplay(target) {
   return `"${String(target || '').trim()}"`;
 }
 
+function formatPlayerSteamIdentity(steamId) {
+  const normalizedSteamId = steamService.normalizeSteamId(steamId);
+  if (!steamService.isValidSteamId64(normalizedSteamId)) {
+    return '';
+  }
+
+  const steamIdHex = BigInt(normalizedSteamId).toString(16).toUpperCase().padStart(16, '0');
+  return [
+    `\`SteamID:     ${normalizedSteamId}\``,
+    `\`SteamID HEX: 0x${steamIdHex}\``,
+  ].join('\n');
+}
+
 function prependRequestedTargetHeader(request, responseText) {
   if (!request.requestedTarget || request.suppressRequestedTargetHeader) {
     return responseText;
@@ -4269,6 +4282,7 @@ async function formatResponse(interaction, request, responsePayload) {
 async function formatPlayerInfoResponses(interaction, request, responses) {
   const sections = [];
   let responseTarget = '';
+  let responseSteamId = '';
 
   for (const definition of PLAYER_INFO_COMMANDS) {
     const response = responses.find((item) => item.commandName === definition.commandName);
@@ -4279,6 +4293,10 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
     if (!responseTarget) {
       const parsedPayload = parseRelayJsonPayload(response.responsePayload);
       if (parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target')) {
+        const normalizedTarget = steamService.normalizeSteamId(parsedPayload.target);
+        if (steamService.isValidSteamId64(normalizedTarget)) {
+          responseSteamId = normalizedTarget;
+        }
         responseTarget = await steamService.resolveResponseTargetDisplay(parsedPayload.target);
       }
     }
@@ -4297,8 +4315,10 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
   const targetHeader = targetDisplay
     ? `Info about ${targetDisplay}`
     : 'Player info';
+  const steamIdentity = formatPlayerSteamIdentity(responseSteamId);
+  const identityBlock = steamIdentity ? `\n\n${steamIdentity}` : '';
 
-  return `${targetHeader}\n\n${sections.join('\n\n')}`;
+  return `${targetHeader}${identityBlock}\n\n${sections.join('\n\n')}`;
 }
 
 function getInteractionUserMention(interaction) {
