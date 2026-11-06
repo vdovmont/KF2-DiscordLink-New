@@ -4082,7 +4082,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
         mastery: player.mastery,
         prestige: Number.isNaN(Number.parseInt(player.prestige, 10)) ? 0 : Number.parseInt(player.prestige, 10),
         level: Number.isNaN(Number.parseInt(player.level, 10)) ? 0 : Number.parseInt(player.level, 10),
-        role: typeof player.role === 'string' ? player.role.trim() : 'Unknown',
+        role: typeof player.role === 'string' && player.role.trim() ? player.role.trim() : 'Unknown',
         perk: findPerkDefinition(typeof player.role === 'string' ? player.role : ''),
       }));
 
