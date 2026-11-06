@@ -4268,11 +4268,19 @@ async function formatResponse(interaction, request, responsePayload) {
 
 async function formatPlayerInfoResponses(interaction, request, responses) {
   const sections = [];
+  let responseTarget = '';
 
   for (const definition of PLAYER_INFO_COMMANDS) {
     const response = responses.find((item) => item.commandName === definition.commandName);
     if (!response) {
       continue;
+    }
+
+    if (!responseTarget) {
+      const parsedPayload = parseRelayJsonPayload(response.responsePayload);
+      if (parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target')) {
+        responseTarget = await steamService.resolveResponseTargetDisplay(parsedPayload.target);
+      }
     }
 
     const responseText = await formatResponse(interaction, {
@@ -4285,8 +4293,9 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
     sections.push(`**${definition.title}**\n${responseText}`);
   }
 
-  const targetHeader = request.requestedTarget
-    ? `Info about ${request.requestedTarget}`
+  const targetDisplay = responseTarget || request.requestedTarget;
+  const targetHeader = targetDisplay
+    ? `Info about ${targetDisplay}`
     : 'Player info';
 
   return `${targetHeader}\n\n${sections.join('\n\n')}`;
