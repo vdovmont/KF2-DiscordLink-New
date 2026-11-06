@@ -917,7 +917,8 @@ function addTargetOption(commandBuilder) {
     option
       .setName('target')
       .setDescription('Nickname, SteamID64 or Steam profile link')
-      .setRequired(true),
+      .setRequired(true)
+      .setAutocomplete(true),
   );
 }
 
@@ -1325,7 +1326,8 @@ const commandDefinitions = [
         option
           .setName('target')
           .setDescription('SteamID64, Steam profile link, or nickname to show in formatted examples')
-          .setRequired(false),
+          .setRequired(false)
+          .setAutocomplete(true),
       ),
   )),
   addHiddenOption(new SlashCommandBuilder()
@@ -4998,6 +5000,22 @@ async function handleExampleCommand(interaction, request) {
 
 async function handleAutocomplete(interaction) {
   const focusedOption = interaction.options.getFocused(true);
+
+  if (focusedOption.name === 'target') {
+    const search = String(focusedOption.value || '').trim();
+    if (!search) {
+      await interaction.respond([]);
+      return;
+    }
+
+    const choices = steamService.findCachedUsers(search, 5)
+      .map(({ nickname, steamId }) => ({
+        name: nickname.slice(0, 100),
+        value: steamId,
+      }));
+    await interaction.respond(choices);
+    return;
+  }
 
   if (focusedOption.name !== 'difficulty') {
     await interaction.respond([]);

@@ -476,6 +476,31 @@ class SteamService {
     fs.writeFileSync(this.cacheFilePath, `${JSON.stringify({ users }, null, 2)}\n`, 'utf8');
   }
 
+  findCachedUsers(query, limit = 25) {
+    this.cleanupExpiredUsersSafely();
+
+    const normalizedQuery = String(query || '').trim().normalize('NFKC').toLocaleLowerCase('en-US');
+    const normalizedLimit = Math.max(1, Math.min(25, Number.parseInt(limit, 10) || 25));
+
+    return [...this.users.values()]
+      .filter((user) => user.nickname
+        && user.nickname.normalize('NFKC').toLocaleLowerCase('en-US').includes(normalizedQuery))
+      .sort((left, right) => {
+        const leftNickname = left.nickname.normalize('NFKC').toLocaleLowerCase('en-US');
+        const rightNickname = right.nickname.normalize('NFKC').toLocaleLowerCase('en-US');
+        const leftStartsWith = leftNickname.startsWith(normalizedQuery);
+        const rightStartsWith = rightNickname.startsWith(normalizedQuery);
+
+        if (leftStartsWith !== rightStartsWith) {
+          return leftStartsWith ? -1 : 1;
+        }
+
+        return leftNickname.localeCompare(rightNickname) || left.steamId.localeCompare(right.steamId);
+      })
+      .slice(0, normalizedLimit)
+      .map(({ nickname, steamId }) => ({ nickname, steamId }));
+  }
+
   cleanupExpiredUsers(now = this.now()) {
     const todayKey = getLocalDateKey(now);
     if (this.lastCleanupDate === todayKey) {
