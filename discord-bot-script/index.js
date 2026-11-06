@@ -2688,7 +2688,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
   const displayCache = await buildMonthlyRewardDisplayCache(payload);
   const intro = [
     'Time UP ! Monthly VIP rewards have been delivered and a new month has started. Monthly rank score is now reset',
-    'Sum up for Scores, ranks and rewards:',
+    'Sum up for scores, ranks and rewards:',
   ].join('\n');
   const difficultySections = [];
   const difficultyEntries = getMonthlyRewardDifficultyEntries(payload);
