@@ -44,6 +44,7 @@ function normalizeCacheRecord(record) {
     nickname: String(record.nickname || ''),
     avatarUrl: String(record.avatarUrl || ''),
     lastFetchedAt: String(record.lastFetchedAt || ''),
+    lastSeenAt: String(record.lastSeenAt || ''),
   };
 }
 
@@ -526,6 +527,54 @@ class SteamService {
       .map(({ nickname, steamId }) => ({ nickname, steamId }));
   }
 
+  markPlayerLastSeen(playerIdentity, seenAt = this.now()) {
+    const identity = String(playerIdentity || '').trim();
+    if (!identity) {
+      return false;
+    }
+
+    const normalizedSteamId = this.normalizeSteamId(identity);
+    let user = null;
+
+    if (this.isValidSteamId64(normalizedSteamId)) {
+      user = this.users.get(normalizedSteamId) || {
+        steamId: normalizedSteamId,
+        vanityName: '',
+        nickname: '',
+        avatarUrl: '',
+        lastFetchedAt: '',
+        lastSeenAt: '',
+      };
+    } else {
+      const nicknameKey = identity.normalize('NFKC').toLocaleLowerCase('en-US');
+      const matches = [...this.users.values()].filter((entry) =>
+        entry.nickname
+        && entry.nickname.normalize('NFKC').toLocaleLowerCase('en-US') === nicknameKey);
+      if (matches.length !== 1) {
+        return false;
+      }
+      [user] = matches;
+    }
+
+    const date = seenAt instanceof Date ? seenAt : new Date(seenAt);
+    if (Number.isNaN(date.getTime())) {
+      return false;
+    }
+
+    user.lastSeenAt = date.toISOString();
+    this.users.set(user.steamId, user);
+    this.saveCache();
+    return true;
+  }
+
+  getPlayerLastSeenAt(steamId) {
+    const normalizedSteamId = this.normalizeSteamId(steamId);
+    if (!this.isValidSteamId64(normalizedSteamId)) {
+      return '';
+    }
+    return this.users.get(normalizedSteamId)?.lastSeenAt || '';
+  }
+
   cleanupExpiredUsers(now = this.now()) {
     const todayKey = getLocalDateKey(now);
     if (this.lastCleanupDate === todayKey) {
@@ -535,7 +584,12 @@ class SteamService {
     const cutoffMs = now.getTime() - (Math.max(1, this.retentionDays) * MILLISECONDS_PER_DAY);
     let removedCount = 0;
     for (const [steamId, record] of this.users.entries()) {
-      const referenceMs = new Date(record.lastFetchedAt).getTime();
+      const fetchedAtMs = new Date(record.lastFetchedAt).getTime();
+      const lastSeenAtMs = new Date(record.lastSeenAt).getTime();
+      const referenceMs = Math.max(
+        Number.isFinite(fetchedAtMs) ? fetchedAtMs : 0,
+        Number.isFinite(lastSeenAtMs) ? lastSeenAtMs : 0,
+      );
       if (!Number.isFinite(referenceMs) || referenceMs < cutoffMs) {
         this.users.delete(steamId);
         removedCount += 1;
@@ -627,6 +681,7 @@ class SteamService {
         nickname: String(player.personaname || ''),
         avatarUrl: String(player.avatar || ''),
         lastFetchedAt: this.now().toISOString(),
+        lastSeenAt: this.users.get(steamId)?.lastSeenAt || '',
       };
       this.users.set(steamId, refreshedUser);
       this.saveCache();

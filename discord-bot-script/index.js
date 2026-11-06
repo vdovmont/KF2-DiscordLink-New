@@ -2683,6 +2683,11 @@ async function resolvePlayerConnectionChatMessage(chatMessage) {
     return chatMessage;
   }
 
+  const messageSteamId = steamService.normalizeSteamId(chatMessage.steamId);
+  steamService.markPlayerLastSeen(
+    steamService.isValidSteamId64(messageSteamId) ? messageSteamId : connectionLog.playerName,
+  );
+
   const normalizedSteamId = steamService.normalizeSteamId(connectionLog.playerName);
   if (!steamService.isValidSteamId64(normalizedSteamId)) {
     return chatMessage;
@@ -4512,6 +4517,25 @@ function formatPlayerSteamIdentity(steamId) {
   ].join('\n');
 }
 
+function formatPlayerLastSeen(steamId) {
+  const lastSeenAt = steamService.getPlayerLastSeenAt(steamId);
+  if (!lastSeenAt) {
+    return '';
+  }
+
+  const lastSeenDate = new Date(lastSeenAt);
+  if (Number.isNaN(lastSeenDate.getTime())) {
+    return '';
+  }
+
+  const year = lastSeenDate.getFullYear();
+  const month = String(lastSeenDate.getMonth() + 1).padStart(2, '0');
+  const day = String(lastSeenDate.getDate()).padStart(2, '0');
+  const hours = String(lastSeenDate.getHours()).padStart(2, '0');
+  const minutes = String(lastSeenDate.getMinutes()).padStart(2, '0');
+  return `\nLast seen in the game - ${year}:${month}:${day} ${hours}:${minutes}`;
+}
+
 function formatDiscordInlineCode(value) {
   return `\`${String(value ?? '').replace(/`/g, '\u02CB')}\``;
 }
@@ -4684,7 +4708,9 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
   const targetHeader = formatTargetResponseHeader(request, targetDisplay, responseSteamId)
     || 'Player info';
   const steamIdentity = formatPlayerSteamIdentity(responseSteamId);
-  const identityBlock = steamIdentity ? `\n\n${steamIdentity}` : '';
+  const lastSeen = formatPlayerLastSeen(responseSteamId);
+  const identityLines = [steamIdentity, lastSeen].filter(Boolean);
+  const identityBlock = identityLines.length > 0 ? `\n\n${identityLines.join('\n')}` : '';
 
   return `${targetHeader}${identityBlock}\n\n${sections.join('\n\n')}`;
 }
