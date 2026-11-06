@@ -21,10 +21,12 @@ const {
   isCountryByIpRequest,
 } = require('./country-service');
 const {
+  LINKS_FILE_PATH,
   STEAM_USERS_FILE_PATH,
   USER_TOKENS_FILE_PATH,
   initializeDataFiles,
 } = require('./data-files');
+const { LinksService } = require('./links-service');
 const {
   escapeDiscordMarkdownText,
   unescapeDiscordMarkdownText,
@@ -37,6 +39,7 @@ const {
   logInfo,
   logKf2ConnectionInfo,
   logKf2ConnectionWarn,
+  logLinksError,
   logReceivedKf2Body,
   logSentKf2Request,
   logVoteInfo,
@@ -87,6 +90,8 @@ const steamService = new SteamService({
   cacheFilePath: STEAM_USERS_FILE_PATH,
   retentionDays: initialRuntimeConfig.steamUserCacheRetentionDays,
 });
+const linksService = new LinksService({ filePath: LINKS_FILE_PATH });
+linksService.initialize();
 
 const countryService = new CountryService({
   token: IPINFO_TOKEN,
@@ -278,6 +283,8 @@ const COMMANDS = Object.freeze({
   RANKS: Object.freeze({ commandName: 'ranks', payloadName: 'rank' }),
   RANKINGS: Object.freeze({ commandName: 'rankings', payloadName: 'rank' }),
   EXAMPLE: Object.freeze({ commandName: 'example', payloadName: null }),
+  LINKS: Object.freeze({ commandName: 'links', payloadName: null }),
+  LINKS_EDIT: Object.freeze({ commandName: 'links-edit', payloadName: null }),
   HELP: Object.freeze({ commandName: 'help', payloadName: null }),
 });
 const KNOWN_COMMANDS = Object.values(COMMANDS).map(({ commandName }) => commandName);
@@ -1210,15 +1217,17 @@ function buildHelpMessage() {
   return [
     '**Commands**',
     `${formatDiscordInlineCode(`/${COMMANDS.HELP.commandName}`)} - Show descriptions of bot commands and their options.`,
-    `${formatDiscordInlineCode(`/${COMMANDS.SERVER_INFO.commandName}`)} - Show current status of a selected KF2 server (current map, xp, players etc).`,
+    `${formatDiscordInlineCode(`/${COMMANDS.LINKS.commandName}`)} - Post a saved Discord channel or message link.`,
     `${formatDiscordInlineCode(`/${COMMANDS.OVERDRIVES.commandName}`)} - Show overdrives information for a target player.`,
     `${formatDiscordInlineCode(`/${COMMANDS.PERKS.commandName}`)} - Show perk levels for a target player.`,
     `${formatDiscordInlineCode(`/${COMMANDS.PLAYER_INFO.commandName}`)} - Show VIP status, perk levels, overdrives, and ranks for a target player.`,
     `${formatDiscordInlineCode(`/${COMMANDS.RANKS.commandName}`)} - Show rank information for a target player (rank for each server difficulty).`,
     `${formatDiscordInlineCode(`/${COMMANDS.RANKINGS.commandName}`)} - Show server rankings for a selected difficulty (first 10 players).`,
+    `${formatDiscordInlineCode(`/${COMMANDS.SERVER_INFO.commandName}`)} - Show current status of a selected KF2 server (current map, xp, players etc).`,
     `${formatDiscordInlineCode(`/${COMMANDS.VIP_INFO.commandName}`)} - Show VIP status for a target player.`,
     '',
     `${formatDiscordInlineCode(`/${COMMANDS.EXAMPLE.commandName}`)} - Preview formatted output from a response payload without using a KF2 server. Not available for public use (devs only).`,
+    `${formatDiscordInlineCode(`/${COMMANDS.LINKS_EDIT.commandName}`)} - Add, edit, or remove saved links. Not available for public use (devs only).`,
     '',
     '**Shared Options**',
     `${formatDiscordInlineCode('target')} - Nickname, SteamID64, or Steam profile link. Used by ${formatDiscordInlineCode(`/${COMMANDS.PLAYER_INFO.commandName}`)}, ${formatDiscordInlineCode(`/${COMMANDS.PERKS.commandName}`)}, ${formatDiscordInlineCode(`/${COMMANDS.VIP_INFO.commandName}`)}, ${formatDiscordInlineCode(`/${COMMANDS.OVERDRIVES.commandName}`)}, and ${formatDiscordInlineCode(`/${COMMANDS.RANKS.commandName}`)}.`,
@@ -1252,6 +1261,71 @@ function ensureExampleAccess(interaction) {
   const error = new Error(`You are not allowed to use the /${COMMANDS.EXAMPLE.commandName} command.`);
   error.suppressConsoleLog = true;
   throw error;
+}
+
+function ensureLinksEditAccess(interaction) {
+  if (hasAnyAllowedRole(interaction, SPECIAL_ACCESS_ROLE_IDS)) {
+    return;
+  }
+
+  const error = new Error(`You are not allowed to use the /${COMMANDS.LINKS_EDIT.commandName} command.`);
+  error.suppressConsoleLog = true;
+  throw error;
+}
+
+function formatSavedDiscordLink(link) {
+  return `[${escapeDiscordMarkdownText(link.name)}](${link.link})`;
+}
+
+async function handleLinksCommand(interaction, hidden = false) {
+  const requestedName = interaction.options.getString('name', true);
+  const link = linksService.findLink(requestedName);
+  if (!link) {
+    throw new Error(`Link "${requestedName}" was not found.`);
+  }
+
+  if (hidden) {
+    await editDiscordReply(interaction, { content: formatSavedDiscordLink(link) });
+    return;
+  }
+
+  await sendDiscordMessage(interaction.channel, { content: formatSavedDiscordLink(link) });
+  await interaction.deleteReply();
+}
+
+async function handleLinksEditCommand(interaction) {
+  ensureLinksEditAccess(interaction);
+  const action = interaction.options.getString('action', true);
+  const name = interaction.options.getString('name', true);
+  const url = interaction.options.getString('link');
+  const newName = interaction.options.getString('new-name');
+  let link;
+
+  if (action === 'add') {
+    if (!url) {
+      throw new Error('The link option is required when adding a link.');
+    }
+    link = linksService.addLink(name, url);
+    await editDiscordReply(interaction, { content: `Added ${formatSavedDiscordLink(link)}.` });
+    return;
+  }
+
+  if (action === 'remove') {
+    link = linksService.removeLink(name);
+    await editDiscordReply(interaction, { content: `Removed link "${escapeDiscordMarkdownText(link.name)}".` });
+    return;
+  }
+
+  if (action === 'edit') {
+    if (!url && !newName) {
+      throw new Error('Provide the link option, the new-name option, or both when editing.');
+    }
+    link = linksService.editLink(name, newName, url);
+    await editDiscordReply(interaction, { content: `Updated ${formatSavedDiscordLink(link)}.` });
+    return;
+  }
+
+  throw new Error(`Unsupported /${COMMANDS.LINKS_EDIT.commandName} action.`);
 }
 
 const commandDefinitions = [
@@ -1338,6 +1412,44 @@ const commandDefinitions = [
           .setAutocomplete(true),
       ),
   )),
+  new SlashCommandBuilder()
+    .setName(COMMANDS.LINKS.commandName)
+    .setDescription('Post a saved Discord channel or message link')
+    .addStringOption((option) =>
+      option
+        .setName('name')
+        .setDescription('Saved link to post')
+        .setRequired(true)
+        .setAutocomplete(true)),
+  new SlashCommandBuilder()
+    .setName(COMMANDS.LINKS_EDIT.commandName)
+    .setDescription('Manage saved Discord channel and message links')
+    .addStringOption((option) =>
+      option
+        .setName('action')
+        .setDescription('Operation to perform')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Add', value: 'add' },
+          { name: 'Edit', value: 'edit' },
+          { name: 'Remove', value: 'remove' },
+        ))
+    .addStringOption((option) =>
+      option
+        .setName('name')
+        .setDescription('New name for add, or an existing name for edit/remove')
+        .setRequired(true)
+        .setAutocomplete(true))
+    .addStringOption((option) =>
+      option
+        .setName('link')
+        .setDescription('Discord channel or message URL for add/edit')
+        .setRequired(false))
+    .addStringOption((option) =>
+      option
+        .setName('new-name')
+        .setDescription('Replacement name for edit')
+        .setRequired(false)),
   addHiddenOption(new SlashCommandBuilder()
     .setName(COMMANDS.HELP.commandName)
     .setDescription('Show descriptions of bot commands and their options')),
@@ -5237,6 +5349,32 @@ async function handleExampleCommand(interaction, request) {
 async function handleAutocomplete(interaction) {
   const focusedOption = interaction.options.getFocused(true);
 
+  if (focusedOption.name === 'name'
+    && [COMMANDS.LINKS.commandName, COMMANDS.LINKS_EDIT.commandName].includes(interaction.commandName)) {
+    if (interaction.commandName === COMMANDS.LINKS_EDIT.commandName
+      && !hasAnyAllowedRole(interaction, SPECIAL_ACCESS_ROLE_IDS)) {
+      await interaction.respond([]);
+      return;
+    }
+
+    if (interaction.commandName === COMMANDS.LINKS_EDIT.commandName) {
+      const action = interaction.options.getString('action');
+      if (!['edit', 'remove'].includes(action)) {
+        await interaction.respond([]);
+        return;
+      }
+    }
+
+    const search = String(focusedOption.value || '').trim().normalize('NFKC').toLocaleLowerCase('en-US');
+    const choices = linksService.getLinks()
+      .filter((link) => !search
+        || link.name.normalize('NFKC').toLocaleLowerCase('en-US').includes(search))
+      .slice(0, 25)
+      .map((link) => ({ name: link.name, value: link.name }));
+    await interaction.respond(choices);
+    return;
+  }
+
   if (focusedOption.name === 'target') {
     const search = String(focusedOption.value || '').trim();
     if (!search) {
@@ -5450,7 +5588,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.isAutocomplete()) {
     if (KNOWN_COMMANDS.includes(interaction.commandName)) {
       await handleAutocomplete(interaction).catch((error) => {
-        logError(`Failed to handle autocomplete: ${error.message || error}`);
+        if ([COMMANDS.LINKS.commandName, COMMANDS.LINKS_EDIT.commandName].includes(interaction.commandName)) {
+          logLinksError(`Failed to handle /${interaction.commandName} autocomplete: ${error.message || error}`);
+        } else {
+          logError(`Failed to handle autocomplete: ${error.message || error}`);
+        }
       });
     }
     return;
@@ -5465,6 +5607,49 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   try {
+    if (interaction.commandName === COMMANDS.LINKS.commandName) {
+      const availabilityResult = checkCommandTokenAvailability(interaction, false);
+      if (!availabilityResult.allowed) {
+        await replyDiscordInteraction(interaction, {
+          content: availabilityResult.message,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      await deferDiscordReply(interaction, { flags: MessageFlags.Ephemeral });
+      const tokenResult = consumeCommandToken(interaction, false);
+      if (!tokenResult.allowed) {
+        await editDiscordReply(interaction, { content: tokenResult.message });
+        return;
+      }
+
+      await handleLinksCommand(interaction, tokenResult.hidden);
+      return;
+    }
+
+    if (interaction.commandName === COMMANDS.LINKS_EDIT.commandName) {
+      ensureLinksEditAccess(interaction);
+      const availabilityResult = checkCommandTokenAvailability(interaction, true);
+      if (!availabilityResult.allowed) {
+        await replyDiscordInteraction(interaction, {
+          content: availabilityResult.message,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      await deferDiscordReply(interaction, { flags: MessageFlags.Ephemeral });
+      const tokenResult = consumeCommandToken(interaction, true);
+      if (!tokenResult.allowed) {
+        await editDiscordReply(interaction, { content: tokenResult.message });
+        return;
+      }
+
+      await handleLinksEditCommand(interaction);
+      return;
+    }
+
     if (interaction.commandName === COMMANDS.HELP.commandName) {
       const requestedHidden = interaction.options.getBoolean('hidden') || false;
       const availabilityResult = checkCommandTokenAvailability(interaction, requestedHidden);
@@ -5541,7 +5726,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     request.hidden = tokenResult.hidden;
     await enqueueRelayRequest(interaction, request);
   } catch (error) {
-    if (!error?.suppressConsoleLog) {
+    if ([COMMANDS.LINKS.commandName, COMMANDS.LINKS_EDIT.commandName].includes(interaction.commandName)) {
+      logLinksError(`Failed to process /${interaction.commandName} command: ${error.message || error}`);
+    } else if (!error?.suppressConsoleLog) {
       logError(`Failed to process command: ${error.message || error}`);
     }
 

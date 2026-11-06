@@ -14,6 +14,7 @@ const logSettings = {
   steamFetch: false,
   steamCache: false,
   countryByIp: false,
+  links: false,
 };
 
 let fileLoggingInitialized = false;
@@ -247,6 +248,10 @@ function logCountryByIpPayload(direction, source, payload) {
   );
 }
 
+function logLinksError(message) {
+  logCategory('links', 'error', message);
+}
+
 function configureLogging(config = {}) {
   const previousRetentionDays = logSettings.logFileRetentionDays;
   const categorySettings = {
@@ -292,6 +297,7 @@ module.exports = {
   logInfo,
   logKf2ConnectionInfo,
   logKf2ConnectionWarn,
+  logLinksError,
   logReceivedKf2Body,
   logSentKf2Request,
   logSteamCache,

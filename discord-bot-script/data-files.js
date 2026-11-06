@@ -5,8 +5,10 @@ const { logInfo, logWarn } = require('./logs');
 const DATA_DIR_PATH = path.resolve(__dirname, 'data');
 const USER_TOKENS_FILE_NAME = 'user_tokens.json';
 const STEAM_USERS_FILE_NAME = 'steam_users.json';
+const LINKS_FILE_NAME = 'links.json';
 const USER_TOKENS_FILE_PATH = path.join(DATA_DIR_PATH, USER_TOKENS_FILE_NAME);
 const STEAM_USERS_FILE_PATH = path.join(DATA_DIR_PATH, STEAM_USERS_FILE_NAME);
+const LINKS_FILE_PATH = path.join(DATA_DIR_PATH, LINKS_FILE_NAME);
 
 function migrateLegacyDataFile(fileName, destinationPath) {
   const legacyPath = path.resolve(__dirname, fileName);
@@ -33,6 +35,7 @@ function initializeDataFiles() {
 
 module.exports = {
   DATA_DIR_PATH,
+  LINKS_FILE_PATH,
   STEAM_USERS_FILE_PATH,
   USER_TOKENS_FILE_PATH,
   initializeDataFiles,
