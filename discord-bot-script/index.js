@@ -4281,20 +4281,33 @@ function formatRequestedTargetLine(request) {
   return `(requested ${formatDiscordInlineCode(request.requestedTargetValue || request.requestedTarget)})`;
 }
 
-function prependRequestedTargetHeader(request, responseText) {
+function formatTargetResponseHeader(request, targetDisplay, responseSteamId = '') {
+  const normalizedTargetDisplay = String(targetDisplay || '').trim();
+  if (!normalizedTargetDisplay) {
+    return '';
+  }
+
+  const lines = [`Info about ${formatResponseTargetDisplay(normalizedTargetDisplay)}`];
+  const originalTarget = request.originalRequestedTarget || request.requestedTarget;
+  const originalRequest = originalTarget
+    ? { ...request, requestedTarget: originalTarget }
+    : null;
+
+  if (originalRequest
+    && !isRequestedTargetMatch(originalRequest, normalizedTargetDisplay, responseSteamId)) {
+    lines.push(formatRequestedTargetLine(originalRequest));
+  }
+
+  return lines.join('\n');
+}
+
+function prependTargetResponseHeader(request, responseText) {
   if (!request.requestedTarget || request.suppressRequestedTargetHeader) {
     return responseText;
   }
 
-  const originalRequest = request.originalRequestedTarget
-    ? { ...request, requestedTarget: request.originalRequestedTarget }
-    : null;
-  const requestedTargetLine = originalRequest
-    && !isRequestedTargetMatch(originalRequest, request.requestedTarget, request.responseSteamId)
-    ? `${formatRequestedTargetLine(originalRequest)}\n`
-    : '';
-
-  return `Information for ${formatResponseTargetDisplay(request.requestedTarget)}:\n${requestedTargetLine}${responseText}`;
+  const header = formatTargetResponseHeader(request, request.requestedTarget, request.responseSteamId);
+  return header ? `${header}\n\n${responseText}` : responseText;
 }
 
 async function formatResponse(interaction, request, responsePayload) {
@@ -4325,19 +4338,19 @@ async function formatResponse(interaction, request, responsePayload) {
     : request;
 
   if (request.raw) {
-    return prependRequestedTargetHeader(effectiveRequest, responsePayload);
+    return prependTargetResponseHeader(effectiveRequest, responsePayload);
   }
 
   if (!parsedPayload) {
-    return prependRequestedTargetHeader(effectiveRequest, FORMAT_RESPONSE_ERROR_MESSAGE);
+    return prependTargetResponseHeader(effectiveRequest, FORMAT_RESPONSE_ERROR_MESSAGE);
   }
 
   if (parsedPayload && typeof parsedPayload.error === 'string' && parsedPayload.error.trim() !== '') {
     if (effectiveRequest.commandName === COMMANDS.VIP_INFO.commandName) {
       const target = formatResponseTargetDisplay(effectiveRequest.requestedTarget || 'User');
-      return prependRequestedTargetHeader(effectiveRequest, `${target}: ${parsedPayload.error.trim()}`);
+      return prependTargetResponseHeader(effectiveRequest, `${target}: ${parsedPayload.error.trim()}`);
     }
-    return prependRequestedTargetHeader(effectiveRequest, parsedPayload.error.trim());
+    return prependTargetResponseHeader(effectiveRequest, parsedPayload.error.trim());
   }
 
   if (effectiveRequest.commandName === COMMANDS.PERKS.commandName) {
@@ -4354,10 +4367,10 @@ async function formatResponse(interaction, request, responsePayload) {
   }
 
   if (!formattedResponse) {
-    return prependRequestedTargetHeader(effectiveRequest, FORMAT_RESPONSE_ERROR_MESSAGE);
+    return prependTargetResponseHeader(effectiveRequest, FORMAT_RESPONSE_ERROR_MESSAGE);
   }
 
-  return prependRequestedTargetHeader(effectiveRequest, formattedResponse);
+  return prependTargetResponseHeader(effectiveRequest, formattedResponse);
 }
 
 async function formatPlayerInfoResponses(interaction, request, responses) {
@@ -4393,14 +4406,8 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
   }
 
   const targetDisplay = responseTarget || request.requestedTarget;
-  const requestedTargetSuffix = responseTarget
-    && request.requestedTarget
-    && !isRequestedTargetMatch(request, responseTarget, responseSteamId)
-    ? `\n${formatRequestedTargetLine(request)}`
-    : '';
-  const targetHeader = targetDisplay
-    ? `Info about ${targetDisplay}${requestedTargetSuffix}`
-    : 'Player info';
+  const targetHeader = formatTargetResponseHeader(request, targetDisplay, responseSteamId)
+    || 'Player info';
   const steamIdentity = formatPlayerSteamIdentity(responseSteamId);
   const identityBlock = steamIdentity ? `\n\n${steamIdentity}` : '';
 
