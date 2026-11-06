@@ -2127,18 +2127,18 @@ function buildVoteHeader(state) {
   const waveNumber = Number.parseInt(state.waveNumber, 10);
   const timestamp = formatDiscordInlineCode(formatVoteTimestamp(state.startedAt));
   const highlightedDifficultyLabel = formatDiscordInlineCode(difficultyLabel);
-  const wavePrefix = Number.isInteger(waveNumber) && waveNumber > 0
-    ? `${formatDiscordInlineCode(`Wave ${waveNumber}`)} - `
+  const waveSuffix = Number.isInteger(waveNumber) && waveNumber > 0
+    ? ` - ${formatDiscordInlineCode(`Wave ${waveNumber}`)}`
     : '';
   const initiator = quoteVotePlayerName(state.initiator);
-  const firstLine = `${timestamp} ${highlightedDifficultyLabel}`;
+  const firstLine = `${timestamp} ${highlightedDifficultyLabel}${waveSuffix}`;
 
   if (state.subtype === 'kick') {
     const target = quoteVotePlayerName(state.target);
-    return `${firstLine}\n${wavePrefix}${initiator} initiated kick of ${target}:`;
+    return `${firstLine}\n${initiator} initiated kick of ${target}:`;
   }
 
-  return `${firstLine}\n${wavePrefix}${initiator} initiated ${state.subtype} vote:`;
+  return `${firstLine}\n${initiator} initiated ${state.subtype} vote:`;
 }
 
 function getVoteChannelIds(config, subtype) {
