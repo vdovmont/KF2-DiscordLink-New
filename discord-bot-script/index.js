@@ -3536,6 +3536,7 @@ async function buildRelayRequest(interaction) {
       requestedTargetValue: target.value,
       payloads: PLAYER_INFO_COMMANDS.map(({ commandName: playerCommandName, payloadName }) => ({
         commandName: playerCommandName,
+        payloadName,
         payload: buildPlayerTargetPayload(payloadName, target),
       })),
       hidden,
@@ -4386,10 +4387,7 @@ async function formatPlayerInfoResponses(interaction, request, responses) {
     if (!responseTarget) {
       const parsedPayload = parseRelayJsonPayload(response.responsePayload);
       if (parsedPayload && Object.prototype.hasOwnProperty.call(parsedPayload, 'target')) {
-        const normalizedTarget = steamService.normalizeSteamId(parsedPayload.target);
-        if (steamService.isValidSteamId64(normalizedTarget)) {
-          responseSteamId = normalizedTarget;
-        }
+        responseSteamId = getResponseSteamId(response.responsePayload);
         responseTarget = await steamService.resolveResponseTargetDisplay(parsedPayload.target);
       }
     }
@@ -4474,6 +4472,54 @@ function sendPayloadToRelay(relay, payload) {
   return relay.connection.sendRequest(payload);
 }
 
+function getResponseSteamId(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  if (!parsedPayload || !Object.prototype.hasOwnProperty.call(parsedPayload, 'target')) {
+    return '';
+  }
+
+  const steamId = steamService.normalizeSteamId(parsedPayload.target);
+  return steamService.isValidSteamId64(steamId) ? steamId : '';
+}
+
+function getResponseError(responsePayload) {
+  const parsedPayload = parseRelayJsonPayload(responsePayload);
+  return parsedPayload && typeof parsedPayload.error === 'string'
+    ? parsedPayload.error.trim()
+    : '';
+}
+
+async function sendPlayerInfoRequests(relay, request) {
+  const responses = [];
+  let resolvedSteamTarget = null;
+
+  for (const [index, playerInfoRequest] of request.payloads.entries()) {
+    const payload = resolvedSteamTarget
+      ? buildPlayerTargetPayload(playerInfoRequest.payloadName, resolvedSteamTarget)
+      : playerInfoRequest.payload;
+    const responsePayload = await sendPayloadToRelay(relay, payload);
+
+    responses.push({
+      commandName: playerInfoRequest.commandName,
+      responsePayload,
+    });
+
+    if (index === 0 && getResponseError(responsePayload)) {
+      return { responses, initialErrorResponsePayload: responsePayload };
+    }
+
+    if (index === 0 && request.requestedTargetType === 'nickname') {
+      const steamId = getResponseSteamId(responsePayload);
+      if (!steamId) {
+        throw new Error('The perks response did not contain a valid SteamID64 target; remaining player info requests were not sent.');
+      }
+      resolvedSteamTarget = { type: 'steamid', value: steamId };
+    }
+  }
+
+  return { responses, initialErrorResponsePayload: '' };
+}
+
 async function processRelayQueue(difficulty) {
   if (processingDifficulties.has(difficulty)) {
     return;
@@ -4500,13 +4546,16 @@ async function processRelayQueue(difficulty) {
         }
 
         if (job.request.commandName === COMMANDS.PLAYER_INFO.commandName) {
-          const responses = [];
+          const { responses, initialErrorResponsePayload } = await sendPlayerInfoRequests(relay, job.request);
 
-          for (const playerInfoRequest of job.request.payloads) {
-            responses.push({
-              commandName: playerInfoRequest.commandName,
-              responsePayload: await sendPayloadToRelay(relay, playerInfoRequest.payload),
-            });
+          if (initialErrorResponsePayload) {
+            await postResponse(
+              job.interaction,
+              { ...job.request, commandName: COMMANDS.PERKS.commandName },
+              initialErrorResponsePayload,
+              `Sent player info request to KF2 server "${difficulty}" and posted the error response.`,
+            );
+            continue;
           }
 
           await postPlayerInfoResponse(
@@ -4725,6 +4774,16 @@ async function handleExampleCommand(interaction, request) {
   }
 
   if (request.commandName === COMMANDS.PLAYER_INFO.commandName) {
+    if (getResponseError(request.responsePayload)) {
+      await postResponse(
+        interaction,
+        { ...request, commandName: COMMANDS.PERKS.commandName },
+        request.responsePayload,
+        `Posted example error response for "/${COMMANDS.PLAYER_INFO.commandName}".`,
+      );
+      return;
+    }
+
     await postPlayerInfoResponse(
       interaction,
       request,
