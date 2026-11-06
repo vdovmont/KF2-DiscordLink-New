@@ -2112,10 +2112,10 @@ function formatVoteTimestamp(value) {
 function buildVoteHeader(state) {
   const difficultyLabel = state.difficultyLabel || getDifficultyLabel(state.difficulty);
   const waveNumber = Number.parseInt(state.waveNumber, 10);
-  const timestamp = `\`${formatVoteTimestamp(state.startedAt)}\``;
-  const highlightedDifficultyLabel = `\`${difficultyLabel}\``;
+  const timestamp = formatDiscordInlineCode(formatVoteTimestamp(state.startedAt));
+  const highlightedDifficultyLabel = formatDiscordInlineCode(difficultyLabel);
   const wavePrefix = Number.isInteger(waveNumber) && waveNumber > 0
-    ? `\`Wave ${waveNumber}\` - `
+    ? `${formatDiscordInlineCode(`Wave ${waveNumber}`)} - `
     : '';
   const initiator = quoteVotePlayerName(state.initiator);
   const firstLine = `${timestamp} ${highlightedDifficultyLabel}`;
@@ -2192,7 +2192,7 @@ function appendVotePlayerSection(lines, title, players, state, options = {}) {
     lines.push('');
   }
 
-  lines.push(`\`${title}\``);
+  lines.push(formatDiscordInlineCode(title));
   if (players.length === 0) {
     lines.push(options.emptyPlaceholder);
     return;
@@ -2280,9 +2280,9 @@ function formatVoteMessage(state) {
     lines.push('');
   }
   if (typeof state.result === 'boolean') {
-    lines.push(`\`Result:\` (${stats.positivePercent}%/${stats.requiredPercent}%) ${formatVoteBoolean(state.result)}`);
+    lines.push(`${formatDiscordInlineCode('Result:')} (${stats.positivePercent}%/${stats.requiredPercent}%) ${formatVoteBoolean(state.result)}`);
   } else {
-    lines.push(`\`Result:\` (${stats.positivePercent}%/${stats.requiredPercent}%)`);
+    lines.push(`${formatDiscordInlineCode('Result:')} (${stats.positivePercent}%/${stats.requiredPercent}%)`);
   }
 
   lines.push(separator);
@@ -2717,7 +2717,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
         + `${padEndByDiscordTextWidth(row.points, pointsWidth)}  `
         + `${padEndByDiscordTextWidth(row.rewardDays, rewardDaysWidth)} `
         + padEndByDiscordTextWidth(row.dayLabel, dayLabelWidth);
-      lines.push(`\`${statText}\` ${row.player}`);
+      lines.push(`${formatDiscordInlineCode(statText)} ${row.player}`);
     }
 
     difficultySections.push(lines.join('\n'));
@@ -2751,7 +2751,7 @@ async function buildMonthlyRankingRewardBlocks(payload) {
     for (const row of rows) {
       const statText = `${padEndByDiscordTextWidth(row.days, daysWidth)} `
         + padEndByDiscordTextWidth(row.dayLabel, dayLabelWidth);
-      rewardLines.push(`\`${statText}\` ${row.player}`);
+      rewardLines.push(`${formatDiscordInlineCode(statText)} ${row.player}`);
     }
   }
 
@@ -3868,7 +3868,7 @@ function formatPerkResponse(interaction, request, responsePayload) {
     const paddedLabel = perk.label.padEnd(longestLabelLength, ' ');
     const paddedPrestige = String(entry.prestige).padStart(longestPrestigeLength, ' ');
     const paddedLevel = String(entry.level).padStart(longestLevelLength, ' ');
-    lines.push(`${resolveGuildEmoji(interaction, perk.emojiName)} \`${paddedLabel}: ${paddedPrestige}-${paddedLevel}\``);
+    lines.push(`${resolveGuildEmoji(interaction, perk.emojiName)} ${formatDiscordInlineCode(`${paddedLabel}: ${paddedPrestige}-${paddedLevel}`)}`);
   }
 
   return lines.join('\n');
@@ -3934,7 +3934,7 @@ function formatOverdrivesResponse(request, responsePayload) {
   lines.push(formatRow('🚩 Total', total.current, total.max));
 
   return lines
-    .map((line) => (line ? `\`${line}\`` : ''))
+    .map((line) => (line ? formatDiscordInlineCode(line) : ''))
     .join('\n');
 }
 
@@ -4086,7 +4086,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
     for (const player of playerEntries) {
       const prefix = player.perk
         ? resolveGuildEmoji(interaction, player.perk.emojiName)
-        : `\`${player.role}\``;
+        : formatDiscordInlineCode(player.role);
       const statusEmoji = player.status === 'dead' ? '💀' : '❤️';
       const rankParts = [];
       if (usesMastery) {
@@ -4097,7 +4097,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
       rankParts.push(paddedPrestige, paddedLevel);
       const rowParts = [rankParts.join('-'), statusEmoji, player.country, player.displayName];
 
-      lines.push(`${prefix ? `${prefix} ` : ''}\`${rowParts.join(' | ')}\``);
+      lines.push(`${prefix ? `${prefix} ` : ''}${formatDiscordInlineCode(rowParts.join(' | '))}`);
     }
   }
 
@@ -4123,7 +4123,7 @@ function formatInfoResponse(interaction, request, responsePayload) {
     for (const section of bossSections) {
       const paddedLabel = section.label.padEnd(longestBossLabelLength, ' ');
       const bossText = section.values.length > 0 ? section.values.join(', ') : 'None';
-      lines.push(`\`${paddedLabel}: ${bossText}\``);
+      lines.push(formatDiscordInlineCode(`${paddedLabel}: ${bossText}`));
     }
   }
 
@@ -4157,7 +4157,7 @@ function formatRankResponse(request, responsePayload) {
       const paddedPlayerName = padEndByDiscordTextWidth(entry.displayPlayerName, longestPlayerNameLength);
       const paddedRank = String(entry.rank).padStart(longestRankLength, ' ');
       const paddedPoints = String(entry.points).padStart(longestPointsLength, ' ');
-      lines.push(`\`${paddedPlayerName}: ${paddedRank} with ${paddedPoints} points\``);
+      lines.push(formatDiscordInlineCode(`${paddedPlayerName}: ${paddedRank} with ${paddedPoints} points`));
     }
 
     return lines.join('\n');
@@ -4190,12 +4190,12 @@ function formatRankResponse(request, responsePayload) {
   lines.push(...rankEntries.map((entry) => {
     const paddedLabel = entry.label.padEnd(longestLabelLength, ' ');
     if (entry.rank === 0) {
-      return `\`${paddedLabel}: Unranked\``;
+      return formatDiscordInlineCode(`${paddedLabel}: Unranked`);
     }
 
     const paddedRank = String(entry.rank).padStart(longestRankLength, ' ');
     const paddedPoints = String(entry.points).padStart(longestPointsLength, ' ');
-    return `\`${paddedLabel}: Rank ${paddedRank} with ${paddedPoints} points\``;
+    return formatDiscordInlineCode(`${paddedLabel}: Rank ${paddedRank} with ${paddedPoints} points`);
   }));
 
   if (projectedVipDays > 0) {
@@ -4218,13 +4218,13 @@ function formatPlayerSteamIdentity(steamId) {
 
   const steamIdHex = BigInt(normalizedSteamId).toString(16).toUpperCase().padStart(16, '0');
   return [
-    `\`SteamID:     ${normalizedSteamId}\``,
-    `\`SteamID HEX: 0x${steamIdHex}\``,
+    formatDiscordInlineCode(`SteamID:     ${normalizedSteamId}`),
+    formatDiscordInlineCode(`SteamID HEX: 0x${steamIdHex}`),
   ].join('\n');
 }
 
 function formatDiscordInlineCode(value) {
-  return `\`${String(value || '').replace(/`/g, '\u02CB')}\``;
+  return `\`${String(value ?? '').replace(/`/g, '\u02CB')}\``;
 }
 
 function normalizePlayerIdentity(value) {
