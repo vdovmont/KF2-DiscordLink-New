@@ -1332,36 +1332,36 @@ const commandDefinitions = [
   addRawOption(addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
       .setName(COMMANDS.SERVER_INFO.commandName)
-      .setDescription('Send a server info request to the matching KF2 server'),
+      .setDescription('Show current status of a selected KF2 server (current map, xp, players etc).'),
   ))),
   addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
     .setName(COMMANDS.PLAYER_INFO.commandName)
-    .setDescription('Show VIP, perk, overdrive, and rank information for a player')))),
+    .setDescription('Show VIP status, perk levels, overdrives, and ranks for a target player.')))),
   addRawOption(addHiddenOption(
     addTargetOption(new SlashCommandBuilder()
       .setName(COMMANDS.PERKS.commandName)
-      .setDescription('Send a perk request to the first connected KF2 server')),
+      .setDescription('Show perk levels for a target player.')),
   )),
   addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
     .setName(COMMANDS.VIP_INFO.commandName)
-    .setDescription('Send a VIP info request to the first connected KF2 server')))),
+    .setDescription('Show VIP status for a target player.')))),
   addRawOption(addHiddenOption(addTargetOption(new SlashCommandBuilder()
     .setName(COMMANDS.OVERDRIVES.commandName)
-    .setDescription('Send an overdrives request to the first connected KF2 server')))),
+    .setDescription('Show overdrives information for a target player.')))),
   addRawOption(addHiddenOption(addTargetOption(
     new SlashCommandBuilder()
       .setName(COMMANDS.RANKS.commandName)
-      .setDescription('Send a player rank request to the first connected KF2 server'),
+      .setDescription('Show rank information for a target player (rank for each server difficulty).'),
   ))),
   addRawOption(addHiddenOption(addDifficultyOption(
     new SlashCommandBuilder()
       .setName(COMMANDS.RANKINGS.commandName)
-      .setDescription('Send a server rankings request to the matching KF2 server'),
+      .setDescription('Show server rankings for a selected difficulty (first 10 players).'),
   ))),
   addRawOption(addHiddenOption(
     new SlashCommandBuilder()
       .setName(COMMANDS.EXAMPLE.commandName)
-      .setDescription('Preview a response payload without using a KF2 server')
+      .setDescription('Preview formatted output from a response payload without using a KF2 server (devs only).')
       .addStringOption((option) =>
         option
           .setName('command')
@@ -1414,7 +1414,7 @@ const commandDefinitions = [
   )),
   new SlashCommandBuilder()
     .setName(COMMANDS.LINKS.commandName)
-    .setDescription('Post a saved Discord channel or message link')
+    .setDescription('Post a saved Discord channel or message link.')
     .addStringOption((option) =>
       option
         .setName('name')
@@ -1423,7 +1423,7 @@ const commandDefinitions = [
         .setAutocomplete(true)),
   new SlashCommandBuilder()
     .setName(COMMANDS.LINKS_EDIT.commandName)
-    .setDescription('Manage saved Discord channel and message links')
+    .setDescription('Add, edit, or remove saved links. Not available for public use (devs only).')
     .addStringOption((option) =>
       option
         .setName('action')
