@@ -4313,6 +4313,10 @@ function prependTargetResponseHeader(request, responseText) {
 }
 
 async function formatResponse(interaction, request, responsePayload) {
+  if (request.raw) {
+    return responsePayload;
+  }
+
   let formattedResponse = responsePayload;
   const parseResult = getRelayJsonParseResult(responsePayload);
   if (parseResult.error && isKf2JsonLikePayload(responsePayload)) {
@@ -4338,10 +4342,6 @@ async function formatResponse(interaction, request, responsePayload) {
       responseSteamId,
     }
     : request;
-
-  if (request.raw) {
-    return prependTargetResponseHeader(effectiveRequest, responsePayload);
-  }
 
   if (!parsedPayload) {
     return prependTargetResponseHeader(effectiveRequest, FORMAT_RESPONSE_ERROR_MESSAGE);
@@ -4376,6 +4376,10 @@ async function formatResponse(interaction, request, responsePayload) {
 }
 
 async function formatPlayerInfoResponses(interaction, request, responses) {
+  if (request.raw) {
+    return responses.map(({ responsePayload }) => responsePayload).join('\n');
+  }
+
   const sections = [];
   let responseTarget = '';
   let responseSteamId = '';
@@ -4423,11 +4427,10 @@ function wrapFormattedResponse(interaction, request, responseText) {
 }
 
 async function postResponse(interaction, request, responsePayload, successMessage) {
-  const formattedResponse = wrapFormattedResponse(
-    interaction,
-    request,
-    await formatResponse(interaction, request, responsePayload),
-  );
+  const responseText = await formatResponse(interaction, request, responsePayload);
+  const formattedResponse = request.raw
+    ? responseText
+    : wrapFormattedResponse(interaction, request, responseText);
 
   if (request.hidden) {
     await editDiscordReply(interaction, {
@@ -4445,6 +4448,24 @@ async function postResponse(interaction, request, responsePayload, successMessag
 }
 
 async function postPlayerInfoResponse(interaction, request, responses, successMessage) {
+  if (request.raw) {
+    const responsePayloads = responses.map(({ responsePayload }) => responsePayload);
+    if (request.hidden) {
+      const [firstPayload, ...remainingPayloads] = responsePayloads;
+      await editDiscordReply(interaction, { content: firstPayload });
+      for (const responsePayload of remainingPayloads) {
+        await followUpDiscordInteraction(interaction, { content: responsePayload });
+      }
+      return;
+    }
+
+    for (const responsePayload of responsePayloads) {
+      await sendDiscordMessage(interaction.channel, { content: responsePayload });
+    }
+    await editDiscordReply(interaction, { content: successMessage });
+    return;
+  }
+
   const formattedResponse = wrapFormattedResponse(
     interaction,
     request,
@@ -4576,6 +4597,9 @@ async function sendPlayerInfoRequests(relay, request) {
     if (index === 0 && request.requestedTargetType === 'nickname') {
       const steamId = getResponseSteamId(responsePayload);
       if (!steamId) {
+        if (request.raw) {
+          return { responses, initialErrorResponsePayload: responsePayload, relay: currentRelay };
+        }
         throw new Error('The perks response did not contain a valid SteamID64 target; remaining player info requests were not sent.');
       }
       resolvedSteamTarget = { type: 'steamid', value: steamId };
@@ -4614,11 +4638,14 @@ async function processRelayQueue(difficulty) {
           } = await sendPlayerInfoRequests(relay, job.request);
 
           if (initialErrorResponsePayload) {
+            const rawResponseOnly = job.request.raw && !getResponseError(initialErrorResponsePayload);
             await postResponse(
               job.interaction,
               { ...job.request, commandName: COMMANDS.PERKS.commandName },
               initialErrorResponsePayload,
-              `Sent player info request to KF2 server "${responseRelay.name}" and posted the error response.`,
+              rawResponseOnly
+                ? `Sent player info request to KF2 server "${responseRelay.name}" and posted the raw response.`
+                : `Sent player info request to KF2 server "${responseRelay.name}" and posted the error response.`,
             );
             continue;
           }
@@ -4797,7 +4824,14 @@ async function buildExampleRequest(interaction) {
 
   if (commandName === COMMANDS.PLAYER_INFO.commandName) {
     const parseResult = getRelayJsonParseResult(responsePayload);
-    if (parseResult.error || !parseResult.payload || typeof parseResult.payload !== 'object') {
+    const invalidPlayerInfoPayload = Boolean(
+      parseResult.error
+      || !parseResult.payload
+      || typeof parseResult.payload !== 'object'
+      || Array.isArray(parseResult.payload),
+    );
+
+    if (invalidPlayerInfoPayload && !raw) {
       throw new Error(buildExampleJsonValidationError(
         COMMANDS.PLAYER_INFO.commandName,
         responsePayload,
@@ -4846,6 +4880,16 @@ async function handleExampleCommand(interaction, request) {
   }
 
   if (request.commandName === COMMANDS.PLAYER_INFO.commandName) {
+    if (request.raw) {
+      await postResponse(
+        interaction,
+        { ...request, raw: true },
+        request.responsePayload,
+        `Posted raw example response for "/${COMMANDS.PLAYER_INFO.commandName}".`,
+      );
+      return;
+    }
+
     if (getResponseError(request.responsePayload)) {
       await postResponse(
         interaction,
