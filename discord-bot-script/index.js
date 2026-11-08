@@ -40,6 +40,7 @@ const {
   logKf2ConnectionInfo,
   logKf2ConnectionWarn,
   logLinksError,
+  logLinksInfo,
   logReceivedKf2Body,
   logSentKf2Body,
   logVoteInfo,
@@ -586,6 +587,7 @@ function loadRuntimeConfig(env = process.env) {
     toggleSteamFetchLogs: parseToggle(env.TOGGLE_STEAM_FETCH_LOGS, false),
     toggleSteamCacheLogs: parseToggle(env.TOGGLE_STEAM_CACHE_LOGS, false),
     toggleCountryByIpLogs: parseToggle(env.TOGGLE_COUNTRY_BY_IP_LOGS, false),
+    toggleLinksLogs: parseToggle(env.TOGGLE_LINKS_LOGS, false),
     toggleAllFileLogs: parseToggle(env.TOGGLE_ALL_FILE_LOGS, true),
     discordWebhookRateLimitRetryLimit: parsePositiveInteger(env.DISCORD_WEBHOOK_RATE_LIMIT_RETRY_LIMIT, 5),
     discordWebhookRetryIntervalMs: parseSecondsToMilliseconds(env.DISCORD_WEBHOOK_RETRY_INTERVAL_SECONDS, 30),
@@ -1292,6 +1294,25 @@ async function handleLinksCommand(interaction, hidden = false) {
 
   await sendDiscordMessage(interaction.channel, { content: formatSavedDiscordLink(link) });
   await interaction.deleteReply();
+}
+
+function logLinksCommandUsage(interaction) {
+  const userName = getCommandTokenUsername(interaction) || 'Unknown user';
+  const userId = interaction.user?.id || 'unknown';
+  const commandName = interaction.commandName;
+  const optionNames = commandName === COMMANDS.LINKS_EDIT.commandName
+    ? ['action', 'name', 'new-name']
+    : ['name'];
+  const optionDetails = optionNames
+    .map((optionName) => {
+      const value = interaction.options.getString(optionName);
+      return value ? `${optionName}=${JSON.stringify(value)}` : null;
+    })
+    .filter(Boolean)
+    .join(', ');
+  const detailsSuffix = optionDetails ? ` (${optionDetails})` : '';
+
+  logLinksInfo(`${userName} [Discord ID: ${userId}] used /${commandName}${detailsSuffix}.`);
 }
 
 async function handleLinksEditCommand(interaction) {
@@ -5634,6 +5655,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (!KNOWN_COMMANDS.includes(interaction.commandName)) {
     return;
+  }
+
+  if ([COMMANDS.LINKS.commandName, COMMANDS.LINKS_EDIT.commandName].includes(interaction.commandName)) {
+    logLinksCommandUsage(interaction);
   }
 
   try {

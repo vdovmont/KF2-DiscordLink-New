@@ -249,7 +249,11 @@ function logCountryByIpPayload(direction, source, payload) {
 }
 
 function logLinksError(message) {
-  logCategory('links', 'error', message);
+  logCategory('links', 'error', `[Links] ${message}`);
+}
+
+function logLinksInfo(message) {
+  logCategory('links', 'log', `[Links] ${message}`);
 }
 
 function configureLogging(config = {}) {
@@ -262,6 +266,7 @@ function configureLogging(config = {}) {
     steamFetch: config.toggleSteamFetchLogs,
     steamCache: config.toggleSteamCacheLogs,
     countryByIp: config.toggleCountryByIpLogs,
+    links: config.toggleLinksLogs,
   };
 
   for (const [category, enabled] of Object.entries(categorySettings)) {
@@ -298,6 +303,7 @@ module.exports = {
   logKf2ConnectionInfo,
   logKf2ConnectionWarn,
   logLinksError,
+  logLinksInfo,
   logReceivedKf2Body,
   logSentKf2Body,
   logSteamCache,
