@@ -4534,7 +4534,7 @@ function formatPlayerLastSeen(steamId) {
   const day = String(lastSeenDate.getDate()).padStart(2, '0');
   const hours = String(lastSeenDate.getHours()).padStart(2, '0');
   const minutes = String(lastSeenDate.getMinutes()).padStart(2, '0');
-  return `\nLast seen in the game - ${year}:${month}:${day} ${hours}:${minutes}`;
+  return `\nLast seen in the game - ${year}.${month}.${day} ${hours}:${minutes}`;
 }
 
 function formatDiscordInlineCode(value) {
