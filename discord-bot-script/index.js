@@ -2467,7 +2467,7 @@ function formatVoteMessage(state) {
     '',
   ];
 
-  appendVotePlayerSection(lines, 'Current players:', getCurrentVotePlayers(state), state, {
+  appendVotePlayerSection(lines, `Current players (${state.currentPlayerKeys.size}):`, getCurrentVotePlayers(state), state, {
     emptyPlaceholder: '-',
   });
   appendVotePlayerSection(lines, 'Players who left:', getLeftVotePlayers(state), state);
